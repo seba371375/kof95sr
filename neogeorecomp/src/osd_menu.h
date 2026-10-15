@@ -29,6 +29,10 @@ int  window_get_video_filter(void);
 void window_set_video_filter(int filter);
 const char *window_get_video_filter_name(int filter);
 
+/* VSync / Low Latency mode (1=VSync ON Smooth, 0=VSync OFF Ultra-Low Latency) */
+int  window_get_vsync(void);
+void window_set_vsync(int vsync);
+
 /* Keyboard configuration actions */
 typedef enum {
     KEY_ACT_P1_UP = 0,

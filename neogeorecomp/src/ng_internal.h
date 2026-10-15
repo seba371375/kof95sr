@@ -108,6 +108,8 @@ extern uint64_t exec_native_blocks, exec_interp_instrs;
 /* ---- host platform (platform.c) ---- */
 void platform_early_init(void);       /* crash reporting; call first */
 int  platform_init(const char *title, int scale, int headless, const char *record_path);
+bool platform_poll_input(ng_input_t *in);
+void platform_present(const uint32_t *fb);
 bool platform_frame(const uint32_t *fb, ng_input_t *in);  /* false = quit */
 bool platform_is_paused(void);
 void platform_audio(const int16_t *samples, size_t frames);
@@ -117,6 +119,8 @@ FILE *ng_open_config(const char *filename, const char *mode);
 
 /* ---- window (window_sdl.c, or stubs in platform.c without SDL2) ---- */
 int  window_open(const char *title, int scale);
+bool window_poll_input(ng_input_t *in);
+void window_present(const uint32_t *fb);
 bool window_frame(const uint32_t *fb, ng_input_t *in);   /* false = quit */
 void window_audio(const int16_t *samples, size_t frames);
 void window_close(void);

@@ -18,8 +18,12 @@
 #include <string.h>
 
 #ifdef _WIN32
+#include <windows.h>
+#include <mmsystem.h>
 #define strcasecmp _stricmp
 #endif
+
+static int s_vsync = 1; // 1 = VSync ON (Smooth 60Hz), 0 = VSync OFF (Ultra Low Latency)
 
 #ifdef NG_HAVE_OPENGL
 #define GL_SILENCE_DEPRECATION
@@ -317,13 +321,34 @@ void window_save_controls_cfg(void) {
     fprintf(f, "#   4 = CRT Trinitron (RGB)   5 = Scale2x (Pixel HD)\n");
     fprintf(f, "#   6 = CRT Warm (Curved)\n\n");
     fprintf(f, "pad_layout=%d\n", s_pad_layout);
-    fprintf(f, "video_filter=%d\n\n", s_video_filter);
+    fprintf(f, "video_filter=%d\n", s_video_filter);
+    fprintf(f, "vsync=%d\n\n", s_vsync);
 
     fprintf(f, "# Keyboard Scancodes\n");
     for (int i = 0; i < NUM_KEY_ACTIONS; i++) {
         fprintf(f, "%s=%d\n", s_key_cfg_tags[i], (int)s_key_mappings[i]);
     }
     fclose(f);
+}
+
+int window_get_vsync(void) {
+    return s_vsync;
+}
+
+void window_set_vsync(int vsync) {
+    s_vsync = (vsync != 0) ? 1 : 0;
+#ifdef NG_HAVE_OPENGL
+    if (s_backend == RENDERER_OPENGL && s_gl_ctx) {
+        SDL_GL_SetSwapInterval(s_vsync);
+    }
+#endif
+#if SDL_VERSION_ATLEAST(2, 0, 18)
+    if (s_ren) {
+        SDL_RenderSetVSync(s_ren, s_vsync);
+    }
+#endif
+    window_save_controls_cfg();
+    fprintf(stderr, "[video] VSync set to: %s\n", s_vsync ? "ON (Smooth 60Hz)" : "OFF (Ultra Low Latency)");
 }
 
 void window_set_video_filter(int filter) {
@@ -345,6 +370,8 @@ static void load_controls_cfg(void) {
             if (val >= 0 && val <= 2) s_pad_layout = val;
         } else if (sscanf(line, "video_filter=%d", &val) == 1) {
             if (val >= 0 && val < NUM_VIDEO_FILTERS) s_video_filter = val;
+        } else if (sscanf(line, "vsync=%d", &val) == 1) {
+            s_vsync = (val != 0) ? 1 : 0;
         } else {
             for (int i = 0; i < NUM_KEY_ACTIONS; i++) {
                 char prefix[64];
@@ -417,7 +444,7 @@ static int init_opengl_backend(int w, int h) {
         fprintf(stderr, "[render] SDL_GL_CreateContext failed: %s\n", SDL_GetError());
         return -1;
     }
-    SDL_GL_SetSwapInterval(1); // Enable VSync
+    SDL_GL_SetSwapInterval(s_vsync);
 
     glGenTextures(1, &s_gl_tex);
     glBindTexture(GL_TEXTURE_2D, s_gl_tex);
@@ -543,7 +570,7 @@ static int init_opengl_backend(int w, int h) {
 }
 
 static int init_sdl_backend(int w, int h) {
-    s_ren = SDL_CreateRenderer(s_win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    s_ren = SDL_CreateRenderer(s_win, -1, SDL_RENDERER_ACCELERATED | (s_vsync ? SDL_RENDERER_PRESENTVSYNC : 0));
     if (!s_ren) {
         s_ren = SDL_CreateRenderer(s_win, -1, 0);
     }
@@ -563,6 +590,12 @@ static int init_sdl_backend(int w, int h) {
 }
 
 int window_open(const char *title, int scale) {
+#ifdef _WIN32
+    timeBeginPeriod(1);
+#endif
+    SDL_SetHint(SDL_HINT_JOYSTICK_RAWINPUT, "1");
+    SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS, "1");
+
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMECONTROLLER | SDL_INIT_JOYSTICK) != 0) {
         fprintf(stderr, "error: SDL_Init: %s\n", SDL_GetError());
         return -1;
@@ -868,7 +901,7 @@ static void render_frame_sdl(const uint32_t *fb) {
     SDL_RenderPresent(s_ren);
 }
 
-bool window_frame(const uint32_t *fb, ng_input_t *in) {
+bool window_poll_input(ng_input_t *in) {
     SDL_Event e;
     while (SDL_PollEvent(&e)) {
         if (e.type == SDL_QUIT) return false;
@@ -920,36 +953,53 @@ bool window_frame(const uint32_t *fb, ng_input_t *in) {
         read_gamepad(0, s_pads[0], in);
         read_gamepad(1, s_pads[1], in);
     }
+    return true;
+}
 
-    // Render frame
-    if (fb) {
-        const uint32_t *render_fb = fb;
-        static uint32_t s_disp_fb[NG_SCREEN_W * NG_SCREEN_H];
+void window_present(const uint32_t *fb) {
+    if (!fb) return;
 
-        if (osd_menu_is_open()) {
-            memcpy(s_disp_fb, fb, sizeof(s_disp_fb));
-            osd_menu_render(s_disp_fb);
-            render_fb = s_disp_fb;
-        }
+    const uint32_t *render_fb = fb;
+    static uint32_t s_disp_fb[NG_SCREEN_W * NG_SCREEN_H];
 
-        if (s_backend == RENDERER_OPENGL) {
-            render_frame_gl(render_fb);
-        } else {
-            render_frame_sdl(render_fb);
-        }
+    if (osd_menu_is_open()) {
+        memcpy(s_disp_fb, fb, sizeof(s_disp_fb));
+        osd_menu_render(s_disp_fb);
+        render_fb = s_disp_fb;
     }
 
-    /* Pace to the MVS refresh rate, 59.1856 Hz.
-     * On PS5, SDL_RenderPresent blocks on hardware VSync flip event (sceKernelWaitEqueue),
-     * so software SDL_Delay causes double waiting and halves framerate. */
-#if !defined(__PROSPERO__) && !defined(__PS5__)
+    uint64_t t_before = SDL_GetPerformanceCounter();
+    if (s_backend == RENDERER_OPENGL) {
+        render_frame_gl(render_fb);
+    } else {
+        render_frame_sdl(render_fb);
+    }
+    uint64_t t_after = SDL_GetPerformanceCounter();
     uint64_t freq = SDL_GetPerformanceFrequency();
-    s_next_tick += (uint64_t)((double)freq / 59.185606);
-    uint64_t now = SDL_GetPerformanceCounter();
-    if (now < s_next_tick) SDL_Delay((Uint32)((s_next_tick - now) * 1000 / freq));
-    else if (now - s_next_tick > freq / 10) s_next_tick = now;
-#endif
+    double swap_ms = (double)(t_after - t_before) * 1000.0 / (double)freq;
 
+    /* Pace to the MVS refresh rate, 59.1856 Hz.
+     * When VSync is ON and SwapWindow already blocked on hardware VSync (took >= 6ms),
+     * skip software SDL_Delay to eliminate double waiting and GPU queue lag.
+     * On PS5, SDL_RenderPresent blocks on sceKernelWaitEqueue. */
+#if !defined(__PROSPERO__) && !defined(__PS5__)
+    if (s_vsync && swap_ms >= 6.0) {
+        s_next_tick = t_after;
+    } else {
+        s_next_tick += (uint64_t)((double)freq / 59.185606);
+        if (t_after < s_next_tick) {
+            Uint32 sleep_ms = (Uint32)((s_next_tick - t_after) * 1000 / freq);
+            if (sleep_ms > 0) SDL_Delay(sleep_ms);
+        } else if (t_after - s_next_tick > freq / 10) {
+            s_next_tick = t_after;
+        }
+    }
+#endif
+}
+
+bool window_frame(const uint32_t *fb, ng_input_t *in) {
+    if (!window_poll_input(in)) return false;
+    if (fb) window_present(fb);
     return true;
 }
 
@@ -982,5 +1032,8 @@ void window_close(void) {
     if (s_tex) { SDL_DestroyTexture(s_tex); s_tex = NULL; }
     if (s_ren) { SDL_DestroyRenderer(s_ren); s_ren = NULL; }
     if (s_win) { SDL_DestroyWindow(s_win); s_win = NULL; }
+#ifdef _WIN32
+    timeEndPeriod(1);
+#endif
     SDL_Quit();
 }

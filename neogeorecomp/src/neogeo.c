@@ -258,8 +258,9 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
     for (long frame = 0; o.frames < 0 || frame < o.frames; frame++) {
         ng_input_t in;
         memset(&in, 0, sizeof(in));
-        if (!platform_frame(frame == 0 ? NULL : s_fb, &in)) break;
+        if (!platform_poll_input(&in)) break;
         if (platform_is_paused()) {
+            platform_present(s_fb);
             frame--;
             continue;
         }
@@ -273,6 +274,8 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
         s_audio_frac %= 59185606;
         size_t taken = audio_take_samples(samples, n_samples);
         platform_audio(samples, taken);
+
+        platform_present(s_fb);
 
         if (!s_wav_f && getenv("NG_DUMP_AUDIO")) {
             s_wav_f = fopen("kof95_dump.wav", "wb");
@@ -297,7 +300,7 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
                     fprintf(stderr, "[neogeorecomp] frame %ld -> %s\n", frame, o.shots[i].path);
             }
     }
-    platform_frame(s_fb, &(ng_input_t){0});
+    platform_present(s_fb);
 
     if (s_wav_f) {
         long data_size = ftell(s_wav_f) - 44;

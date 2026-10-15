@@ -102,6 +102,8 @@ int  window_open(const char *title, int scale) {
     fprintf(stderr, "error: built without SDL2; run with --headless\n");
     return -1;
 }
+bool window_poll_input(ng_input_t *in) { (void)in; return true; }
+void window_present(const uint32_t *fb) { (void)fb; }
 bool window_frame(const uint32_t *fb, ng_input_t *in) { (void)fb; (void)in; return true; }
 void window_audio(const int16_t *samples, size_t frames) { (void)samples; (void)frames; }
 void window_close(void) {}
@@ -121,9 +123,19 @@ int platform_init(const char *title, int scale, int headless, const char *record
     return headless ? 0 : window_open(title, scale);
 }
 
-bool platform_frame(const uint32_t *fb, ng_input_t *in) {
+bool platform_poll_input(ng_input_t *in) {
+    return s_headless ? true : window_poll_input(in);
+}
+
+void platform_present(const uint32_t *fb) {
     if (fb && s_rec) fwrite(fb, 4, NG_SCREEN_W * NG_SCREEN_H, s_rec);
-    return s_headless ? true : window_frame(fb, in);
+    if (!s_headless && fb) window_present(fb);
+}
+
+bool platform_frame(const uint32_t *fb, ng_input_t *in) {
+    if (!platform_poll_input(in)) return false;
+    if (fb) platform_present(fb);
+    return true;
 }
 
 bool platform_is_paused(void) {

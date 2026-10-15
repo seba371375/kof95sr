@@ -28,7 +28,7 @@ static menu_page_t s_page = PAGE_MAIN;
 static int s_key_cursor = 0;
 static bool s_waiting_key = false;
 
-#define NUM_MAIN_ITEMS 17
+#define NUM_MAIN_ITEMS 18
 
 static const struct {
     const char *label;
@@ -40,6 +40,7 @@ static const struct {
     {"Random Select (?)",              "Enable (?) random character slot on grid"},
     {"Gamepad Layout",                 "Button Mapping preset (SNK/Modern/Line)"},
     {"Video Filter",                   "Shader/Filter (Raw/Bilinear/CRT/Scale2x)"},
+    {"VSync (Latency)",                "VSync: ON (Smooth) or OFF (Lowest Lag)"},
     {"[ Configure Keyboard Keys... ]", "Remap Player 1 & 2 keyboard keys"},
     {"DIP 1: Test / Setting Mode",     "Enter MVS Hardware Test Menu"},
     {"DIP 2: Coin Chute 2 Option",     "Select 1 coin chute or 2 chutes"},
@@ -92,20 +93,22 @@ static void main_menu_change(int delta) {
         int cur = window_get_video_filter();
         window_set_video_filter(cur + delta);
     } else if (s_cursor == 6) {
+        window_set_vsync(!window_get_vsync());
+    } else if (s_cursor == 7) {
         // Enter Keyboard Config page
         s_page = PAGE_KEYBOARD;
         s_key_cursor = 0;
         s_waiting_key = false;
-    } else if (s_cursor >= 7 && s_cursor <= 14) {
-        int bit = s_cursor - 7;
+    } else if (s_cursor >= 8 && s_cursor <= 15) {
+        int bit = s_cursor - 8;
         uint8_t dips = io_get_dipswitches();
         int cur = (dips >> bit) & 1;
         io_set_dipswitch_bit(bit, !cur);
-    } else if (s_cursor == 15) {
+    } else if (s_cursor == 16) {
         uint8_t dips = io_get_dipswitches();
         io_set_dipswitch_bit(0, !(dips & 1));
         osd_menu_toggle();
-    } else if (s_cursor == 16) {
+    } else if (s_cursor == 17) {
         osd_menu_toggle();
     }
 }
@@ -390,10 +393,17 @@ void osd_menu_render(uint32_t *fb) {
                                                          "<CRT WARM CUR>";
                 draw_text(fb, box_x + 184, row_y, filter_str, is_selected ? 0xFFFFD700 : 0xFF33CCFF);
             } else if (i == 6) {
+                snprintf(line_buf, sizeof(line_buf), "%c %-18s", cursor_sym, s_main_items[i].label);
+                draw_text(fb, box_x + 8, row_y, line_buf, text_color);
+                int vsync = window_get_vsync();
+                const char *vsync_str = vsync ? "< ON (SMOOTH) >" : "< OFF (LOW LAG)>";
+                uint32_t vsync_color = vsync ? 0xFF00FF66 : 0xFFFFCC00;
+                draw_text(fb, box_x + 184, row_y, vsync_str, is_selected ? 0xFFFFD700 : vsync_color);
+            } else if (i == 7) {
                 snprintf(line_buf, sizeof(line_buf), "%c %-27s", cursor_sym, s_main_items[i].label);
                 draw_text(fb, box_x + 8, row_y, line_buf, is_selected ? 0xFFFFD700 : 0xFFFFAA33);
-            } else if (i >= 7 && i <= 14) {
-                int bit = i - 7;
+            } else if (i >= 8 && i <= 15) {
+                int bit = i - 8;
                 bool on = (dips >> bit) & 1;
                 snprintf(line_buf, sizeof(line_buf), "%c %-27s", cursor_sym, s_main_items[i].label);
                 draw_text(fb, box_x + 8, row_y, line_buf, text_color);

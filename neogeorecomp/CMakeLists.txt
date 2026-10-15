@@ -104,7 +104,7 @@ target_include_directories(neogeorecomp
     PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${NG_EXT}/ymfm/src)
 target_link_libraries(neogeorecomp PUBLIC musashi z80core)
 if(WIN32)
-    target_link_libraries(neogeorecomp PUBLIC dbghelp)
+    target_link_libraries(neogeorecomp PUBLIC dbghelp winmm)
 endif()
 if(TARGET SDL2::SDL2)
     # Visible to the game's CMakeLists too, so it can ship the DLL (if not an ALIAS).
