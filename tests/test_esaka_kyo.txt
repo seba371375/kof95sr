@@ -1,0 +1,30 @@
+# Input sequence to reach Stage 1 (Japan: ESAKA theme) with Kyo Kusanagi
+750-755 coin
+780-785 start
+850-855 a
+910-915 a
+960-965 a
+1000-1005 a
+1100-1105 a
+1200-1205 a
+
+# Match starts around frame 1300 - ESAKA BGM is playing!
+# Kyo Kusanagi attacks and voice lines:
+1380-1385 a
+1420-1425 b
+1460-1465 c
+1500-1505 d
+
+# Fireball (Yami Barai): Down, Down-Right, Right + A ("Kurae!")
+1550-1555 down
+1556-1560 right
+1561-1565 a
+
+# Dragon Punch (Oni Yaki): Right, Down, Down-Right + C ("Oriya!")
+1620-1625 right
+1626-1630 down
+1631-1635 right
+1636-1640 c
+
+# Heavy Kick
+1700-1705 d

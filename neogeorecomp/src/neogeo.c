@@ -1,0 +1,465 @@
+/*
+ * neogeo.c — ng_main(): command line, ROM loading, and the frame loop.
+ *
+ * A frame is 264 lines of 768 68k clocks. The loop runs the CPU to the
+ * start of each line, renders visible lines as they are reached, raises
+ * VBlank (IRQ1) at line 240 pixel $11F, and services the LSPC timer
+ * whenever its deadline falls inside the slice.
+ *
+ * Input comes from the window, or from an --input script so headless runs
+ * are reproducible: `<frame>[-<end>] <button>[+<button>...]`, one per line.
+ */
+#include "ng_internal.h"
+#include <neogeorecomp/bus.h>
+#include "romload.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#ifdef NG_HAVE_SDL
+#include <SDL.h>
+#include <SDL_thread.h>
+#ifdef __vita__
+#include <psp2/kernel/threadmgr.h>
+#endif
+
+static SDL_Thread *s_audio_thread = NULL;
+static SDL_sem *s_audio_sem_start = NULL;
+static SDL_sem *s_audio_sem_done = NULL;
+static volatile int s_audio_thread_running = 1;
+static size_t s_audio_req_samples = 0;
+static int16_t s_audio_worker_buf[2048 * 2];
+static size_t s_audio_worker_taken = 0;
+
+static int audio_worker_fn(void *arg) {
+    (void)arg;
+#ifdef __vita__
+    // Pin audio worker thread to CPU Core 1
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), 0x2);
+#endif
+    while (s_audio_thread_running) {
+        SDL_SemWait(s_audio_sem_start);
+        if (!s_audio_thread_running) break;
+
+        s_audio_worker_taken = audio_take_samples(s_audio_worker_buf, s_audio_req_samples);
+        platform_audio(s_audio_worker_buf, s_audio_worker_taken);
+
+        SDL_SemPost(s_audio_sem_done);
+    }
+    return 0;
+}
+#endif
+
+int64_t ng_frame_start;
+
+static uint32_t s_fb[NG_SCREEN_W * NG_SCREEN_H];
+
+/* ---- options ---- */
+
+#define MAX_SHOTS 64
+typedef struct {
+    const char *rom_path, *bios_path, *record, *input, *dump_misses, *bios_name;
+    int headless, interp, verify, scale;
+    long frames;
+    struct { long frame; const char *path; } shots[MAX_SHOTS];
+    int nshots;
+} options_t;
+
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "usage: %s [options]\n"
+        "  --rom-path DIR        game ROM files (default: roms)\n"
+        "  --bios-path DIR       system ROM files (default: the ROM path)\n"
+        "  --bios FILE           system ROM (default: sp-s2.sp1, MVS Asia/Europe)\n"
+        "  --headless            no window; run as fast as possible\n"
+        "  --record FILE.mp4     pipe frames to ffmpeg\n"
+        "  --frames N            stop after N frames\n"
+        "  --screenshot N:FILE   save frame N as PNG (repeatable)\n"
+        "  --input FILE          scripted input (see docs/running.md)\n"
+        "  --interp              run everything in the interpreter\n"
+        "  --verify              re-run every recompiled block in the interpreter and compare\n"
+        "  --dump-misses FILE    write interpreted entry points for the recompiler\n"
+        "  --scale N             window scale (default 3)\n", prog);
+}
+
+static int parse_args(int argc, char **argv, options_t *o) {
+    memset(o, 0, sizeof(*o));
+    o->rom_path = "roms"; o->scale = 3; o->frames = -1; o->bios_name = "sp-s2.sp1";
+    for (int i = 1; i < argc; i++) {
+        const char *a = argv[i];
+        const char *next = i + 1 < argc ? argv[i + 1] : NULL;
+        if (!strcmp(a, "--rom-path") && next) { o->rom_path = next; i++; }
+        else if (!strcmp(a, "--bios-path") && next) { o->bios_path = next; i++; }
+        else if (!strcmp(a, "--bios") && next) { o->bios_name = next; i++; }
+        else if (!strcmp(a, "--headless")) o->headless = 1;
+        else if (!strcmp(a, "--record") && next) { o->record = next; i++; }
+        else if (!strcmp(a, "--frames") && next) { o->frames = atol(next); i++; }
+        else if (!strcmp(a, "--input") && next) { o->input = next; i++; }
+        else if (!strcmp(a, "--interp")) o->interp = 1;
+        else if (!strcmp(a, "--verify")) o->verify = 1;
+        else if (!strcmp(a, "--dump-misses") && next) { o->dump_misses = next; i++; }
+        else if (!strcmp(a, "--scale") && next) { o->scale = atoi(next); i++; }
+        else if (!strcmp(a, "--screenshot") && next) {
+            const char *colon = strchr(next, ':');
+            if (!colon || o->nshots == MAX_SHOTS) { usage(argv[0]); return -1; }
+            o->shots[o->nshots].frame = atol(next);
+            o->shots[o->nshots].path = colon + 1;
+            o->nshots++; i++;
+        }
+        else if (!strcmp(a, "--help") || !strcmp(a, "-h")) { usage(argv[0]); exit(0); }
+        else { usage(argv[0]); return -1; }
+    }
+    if (!o->bios_path) o->bios_path = o->rom_path;
+    return 0;
+}
+
+/* ---- scripted input ---- */
+
+typedef struct { long start, end; ng_input_t in; } script_ev_t;
+static script_ev_t *s_script;
+static int s_nscript;
+
+static int button(const char *name, ng_input_t *in) {
+    static const struct { const char *n; int kind; uint8_t bit; } map[] = {
+        {"up", 1, NG_UP}, {"down", 1, NG_DOWN}, {"left", 1, NG_LEFT}, {"right", 1, NG_RIGHT},
+        {"a", 1, NG_A}, {"b", 1, NG_B}, {"c", 1, NG_C}, {"d", 1, NG_D},
+        {"p2up", 2, NG_UP}, {"p2down", 2, NG_DOWN}, {"p2left", 2, NG_LEFT}, {"p2right", 2, NG_RIGHT},
+        {"p2a", 2, NG_A}, {"p2b", 2, NG_B}, {"p2c", 2, NG_C}, {"p2d", 2, NG_D},
+        {"start", 3, 0}, {"start2", 4, 0}, {"select", 5, 0}, {"coin", 6, 0}, {"coin2", 7, 0},
+        {"service", 8, 0}, {"test", 9, 0},
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (strcmp(name, map[i].n)) continue;
+        switch (map[i].kind) {
+        case 1: in->p1 |= map[i].bit; break;
+        case 2: in->p2 |= map[i].bit; break;
+        case 3: in->start1 = 1; break;
+        case 4: in->start2 = 1; break;
+        case 5: in->select1 = 1; break;
+        case 6: in->coin1 = 1; break;
+        case 7: in->coin2 = 1; break;
+        case 8: in->service = 1; break;
+        case 9: in->test = 1; break;
+        }
+        return 0;
+    }
+    return -1;
+}
+
+static int load_script(const char *path) {
+    FILE *f = fopen(path, "r");
+    if (!f) { fprintf(stderr, "error: cannot open %s\n", path); return -1; }
+    char line[256];
+    int lineno = 0;
+    while (fgets(line, sizeof(line), f)) {
+        lineno++;
+        char *hash = strchr(line, '#');
+        if (hash) *hash = 0;
+        long start, end;
+        char buttons[200];
+        int n = sscanf(line, "%ld-%ld %199s", &start, &end, buttons);
+        if (n != 3) {
+            if (sscanf(line, "%ld %199s", &start, buttons) != 2) continue;
+            end = start + 5;   /* long enough for the BIOS to debounce a press */
+        }
+        script_ev_t ev = {start, end, {0}};
+        for (char *tok = strtok(buttons, "+"); tok; tok = strtok(NULL, "+"))
+            if (button(tok, &ev.in)) {
+                fprintf(stderr, "%s:%d: unknown button '%s'\n", path, lineno, tok);
+                fclose(f); return -1;
+            }
+        s_script = (script_ev_t *)realloc(s_script, (size_t)(s_nscript + 1) * sizeof(*s_script));
+        s_script[s_nscript++] = ev;
+    }
+    fclose(f);
+    return 0;
+}
+
+static void script_input(long frame, ng_input_t *in) {
+    for (int i = 0; i < s_nscript; i++) {
+        const script_ev_t *e = &s_script[i];
+        if (frame < e->start || frame > e->end) continue;
+        in->p1 |= e->in.p1; in->p2 |= e->in.p2;
+        in->start1 |= e->in.start1; in->start2 |= e->in.start2; in->select1 |= e->in.select1;
+        in->coin1 |= e->in.coin1; in->coin2 |= e->in.coin2;
+        in->service |= e->in.service; in->test |= e->in.test;
+    }
+}
+
+/* ---- frame loop ---- */
+
+static void run_until(int64_t t) {
+    while (ng_cycles < t) {
+        int64_t target = t, d = lspc_timer_deadline();
+        if (d < target) target = d;
+        if (target > ng_cycles) exec_run(target);
+        if (ng_cycles >= lspc_timer_deadline()) lspc_timer_fire();
+    }
+}
+
+extern int g_rebuild_calls;
+
+static uint64_t s_prof_m68k = 0;
+static uint64_t s_prof_video = 0;
+static uint64_t s_prof_audio_sync = 0;
+
+static void run_frame(void) {
+    int64_t fs = ng_frame_start;
+    s_prof_m68k = 0;
+    s_prof_video = 0;
+    for (int line = 0; line < NG_LINES_PER_FRAME; line++) {
+        int64_t ls = fs + (int64_t)line * NG_CLOCKS_PER_LINE;
+        uint64_t t_m0 = SDL_GetPerformanceCounter();
+        run_until(ls);
+        uint64_t t_m1 = SDL_GetPerformanceCounter();
+        s_prof_m68k += (t_m1 - t_m0);
+
+        if (line >= NG_FIRST_VISIBLE && line < NG_VBLANK_LINE) {
+            uint64_t t_v0 = SDL_GetPerformanceCounter();
+            video_render_line(line - NG_FIRST_VISIBLE, s_fb + (line - NG_FIRST_VISIBLE) * NG_SCREEN_W);
+            uint64_t t_v1 = SDL_GetPerformanceCounter();
+            s_prof_video += (t_v1 - t_v0);
+        }
+        if (line == NG_VBLANK_LINE) {
+            run_until(ls + NG_VBLANK_HPOS * 2);
+            lspc_vblank();
+        }
+    }
+    ng_frame_start = fs + NG_CLOCKS_PER_FRAME;
+    run_until(ng_frame_start);
+#ifdef NG_HAVE_SDL
+    if (!s_audio_thread) {
+        uint64_t t_a0 = SDL_GetPerformanceCounter();
+        audio_sync();
+        uint64_t t_a1 = SDL_GetPerformanceCounter();
+        s_prof_audio_sync = (t_a1 - t_a0);
+    } else {
+        s_prof_audio_sync = 0;
+    }
+#else
+    audio_sync();
+    s_prof_audio_sync = 0;
+#endif
+    io_post_render_frame(s_fb);
+}
+
+static void power_on(void) {
+    ng_cycles = 0;
+    ng_frame_start = 0;
+    bus_reset();
+    lspc_reset();
+    pal_select_bank(0);
+    video_set_fix_bios(1);
+    audio_select_bios_rom(1);
+    audio_reset();
+    exec_reset();
+    ng_irq_pending = 4;        /* IRQ3 is asserted at power-on until the BIOS acks it */
+}
+
+int ng_main(int argc, char **argv, const ng_game_t *game,
+            const ng_func_entry_t *funcs, size_t nfuncs) {
+    options_t o;
+    platform_early_init();
+    if (parse_args(argc, argv, &o)) return 2;
+    if (o.input && load_script(o.input)) return 1;
+
+    size_t sz, bios_sz, sfix_sz, sm1_sz, lo_sz, srom_sz, m1_sz;
+    uint8_t *prom = ng_load_prom(o.rom_path, game);
+    uint8_t *bios = ng_read_file(o.bios_path, o.bios_name, &bios_sz);
+    uint8_t *sfix = ng_read_file(o.bios_path, "sfix.sfix", &sfix_sz);
+    uint8_t *sm1 = ng_read_file(o.bios_path, "sm1.sm1", &sm1_sz);
+    uint8_t *lo = ng_read_file(o.bios_path, "000-lo.lo", &lo_sz);
+    uint8_t *crom = ng_load_crom(o.rom_path, game);
+    uint8_t *srom = ng_read_file(o.rom_path, game->srom, &srom_sz);
+    uint8_t *m1 = ng_read_file(o.rom_path, game->m1, &m1_sz);
+    if (!prom || !bios || !sfix || !sm1 || !lo || !crom || !srom || !m1) {
+        fprintf(stderr, "error: missing ROM files; see docs/running.md for the expected set\n");
+        return 1;
+    }
+    if (bios_sz < 0x20000) { fprintf(stderr, "error: %s is not a 128 KB system ROM\n", o.bios_name); return 1; }
+    ng_swap16(bios, 0x20000);
+    (void)sz;
+
+    ng_board_t board = {prom, game->prom_size, bios, 1};
+    bus_init(&board);
+    io_reset(1);
+    video_load(crom, game->crom_size, srom, srom_sz, sfix, lo);
+    free(crom);
+    free(srom);
+    free(sfix);
+    free(lo);
+
+    uint32_t vrom_total = game->vrom_size;
+    if (vrom_total == 0) {
+        // default fallback to 16MB Neo Geo limit
+        vrom_total = 0x1000000;
+    }
+    uint8_t *vrom_buf = (uint8_t *)calloc(1, vrom_total);
+    if (!vrom_buf) return 1;
+
+    uint32_t curr_off = 0;
+    for (int nv = 0; nv < NG_MAX_PARTS && game->vrom[nv]; nv++) {
+        size_t vsz = 0;
+        uint8_t *v = ng_read_file(o.rom_path, game->vrom[nv], &vsz);
+        if (!v) { free(vrom_buf); return 1; }
+        uint32_t dest = game->vrom_offsets[nv] ? game->vrom_offsets[nv] : curr_off;
+        if (dest + vsz <= vrom_total) {
+            memcpy(vrom_buf + dest, v, vsz);
+        }
+        curr_off = dest + (uint32_t)vsz;
+        free(v);
+    }
+
+    audio_init(m1, m1_sz, sm1, vrom_buf, vrom_total);
+    exec_init(funcs, nfuncs, o.interp || nfuncs == 0);
+    exec_set_verify(o.verify);
+    if (platform_init(game->title, o.scale, o.headless, o.record)) return 1;
+
+    fprintf(stderr, "[neogeorecomp] %s: %u recompiled entry points%s\n", game->name, (unsigned)nfuncs,
+            (o.interp || nfuncs == 0) ? ", interpreter only" : "");
+    power_on();
+
+#ifdef NG_HAVE_SDL
+    if (!o.headless) {
+        s_audio_sem_start = SDL_CreateSemaphore(0);
+        s_audio_sem_done = SDL_CreateSemaphore(0);
+        s_audio_thread_running = 1;
+        s_audio_thread = SDL_CreateThread(audio_worker_fn, "kof95_audio", NULL);
+    }
+#endif
+
+    static int16_t samples[2048 * 2];
+    static FILE *s_wav_f = NULL;
+    for (long frame = 0; o.frames < 0 || frame < o.frames; frame++) {
+        ng_input_t in;
+        memset(&in, 0, sizeof(in));
+        if (!platform_poll_input(&in)) break;
+        if (platform_is_paused()) {
+            platform_present(s_fb);
+            frame--;
+            continue;
+        }
+        script_input(frame, &in);
+        io_set_inputs(&in);
+        io_sync_soft_dips();
+        uint64_t t0 = SDL_GetPerformanceCounter();
+        run_frame();
+        uint64_t t1 = SDL_GetPerformanceCounter();
+
+#ifdef NG_HAVE_SDL
+        if (s_audio_thread) {
+            if (frame > 0) {
+                SDL_SemWait(s_audio_sem_done);
+            }
+            static uint64_t s_audio_frac = 0;
+            s_audio_frac += (uint64_t)48000 * 1000000;
+            size_t n_samples = (size_t)(s_audio_frac / 59185606);
+            s_audio_frac %= 59185606;
+            s_audio_req_samples = n_samples;
+            SDL_SemPost(s_audio_sem_start);
+        } else {
+            static uint64_t s_audio_frac = 0;
+            s_audio_frac += (uint64_t)48000 * 1000000;
+            size_t n_samples = (size_t)(s_audio_frac / 59185606);
+            s_audio_frac %= 59185606;
+            size_t taken = audio_take_samples(samples, n_samples);
+            platform_audio(samples, taken);
+        }
+#else
+        static uint64_t s_audio_frac = 0;
+        s_audio_frac += (uint64_t)48000 * 1000000;
+        size_t n_samples = (size_t)(s_audio_frac / 59185606);
+        s_audio_frac %= 59185606;
+        size_t taken = audio_take_samples(samples, n_samples);
+        platform_audio(samples, taken);
+#endif
+        uint64_t t2 = SDL_GetPerformanceCounter();
+
+        platform_present(s_fb);
+        uint64_t t3 = SDL_GetPerformanceCounter();
+
+        static int s_perf_log = -1;
+        if (s_perf_log < 0) {
+            s_perf_log = window_get_perf_log();
+            if (!s_perf_log && getenv("NG_PERF")) s_perf_log = 1;
+        }
+
+        if (s_perf_log && (frame <= 10 || frame % 30 == 0)) {
+            uint64_t freq = SDL_GetPerformanceFrequency();
+            double rf_ms = (double)(t1 - t0) * 1000.0 / (double)freq;
+            double m68k_ms = (double)s_prof_m68k * 1000.0 / (double)freq;
+            double vid_ms = (double)s_prof_video * 1000.0 / (double)freq;
+            double async_ms = (double)s_prof_audio_sync * 1000.0 / (double)freq;
+            double wait_ms = (double)(t2 - t1) * 1000.0 / (double)freq;
+            double pres_ms = (double)(t3 - t2) * 1000.0 / (double)freq;
+            double tot_ms = (double)(t3 - t0) * 1000.0 / (double)freq;
+            fprintf(stderr, "[perf] f%ld: tot=%.2fms (m68k=%.2f, vid=%.2f, async=%.2f, await=%.2f, pres=%.2f, reb=%d)\n",
+                    frame, tot_ms, m68k_ms, vid_ms, async_ms, wait_ms, pres_ms, g_rebuild_calls);
+#ifdef __vita__
+            FILE *pf = fopen("ux0:data/kof95/perf.txt", "a");
+            if (pf) {
+                fprintf(pf, "[perf] f%ld: tot=%.2fms (m68k=%.2f, vid=%.2f, async=%.2f, await=%.2f, pres=%.2f)\n",
+                        frame, tot_ms, m68k_ms, vid_ms, async_ms, wait_ms, pres_ms);
+                fflush(pf);
+                fclose(pf);
+            }
+#endif
+        }
+        g_rebuild_calls = 0;
+
+        if (!s_wav_f && getenv("NG_DUMP_AUDIO")) {
+            s_wav_f = fopen("kof95_dump.wav", "wb");
+            if (s_wav_f) {
+                uint8_t hdr[44] = {
+                    'R','I','F','F', 0,0,0,0, 'W','A','V','E',
+                    'f','m','t',' ', 16,0,0,0, 1,0, 2,0,
+                    0x80,0xBB,0,0,   0,0xEE,2,0,  4,0, 16,0,
+                    'd','a','t','a', 0,0,0,0
+                };
+                fwrite(hdr, 1, 44, s_wav_f);
+            }
+        }
+        size_t taken = s_audio_worker_taken;
+        if (s_wav_f) {
+            fwrite(samples, 2, taken * 2, s_wav_f);
+        }
+        for (int i = 0; i < o.nshots; i++)
+            if (o.shots[i].frame == frame) {
+                if (write_png(o.shots[i].path, s_fb, NG_SCREEN_W, NG_SCREEN_H))
+                    fprintf(stderr, "error: cannot write %s\n", o.shots[i].path);
+                else
+                    fprintf(stderr, "[neogeorecomp] frame %ld -> %s\n", frame, o.shots[i].path);
+            }
+    }
+    platform_present(s_fb);
+
+#ifdef NG_HAVE_SDL
+    if (s_audio_thread) {
+        SDL_SemWait(s_audio_sem_done);
+        s_audio_thread_running = 0;
+        SDL_SemPost(s_audio_sem_start);
+        SDL_WaitThread(s_audio_thread, NULL);
+        SDL_DestroySemaphore(s_audio_sem_start);
+        SDL_DestroySemaphore(s_audio_sem_done);
+        s_audio_thread = NULL;
+    }
+#endif
+
+    if (s_wav_f) {
+        long data_size = ftell(s_wav_f) - 44;
+        long riff_size = data_size + 36;
+        fseek(s_wav_f, 4, SEEK_SET);
+        fwrite(&riff_size, 4, 1, s_wav_f);
+        fseek(s_wav_f, 40, SEEK_SET);
+        fwrite(&data_size, 4, 1, s_wav_f);
+        fclose(s_wav_f);
+        s_wav_f = NULL;
+        fprintf(stderr, "[audio] Dumped %ld bytes to kof95_dump.wav\n", data_size);
+    }
+
+    exec_report();
+    if (o.dump_misses) exec_dump_misses(o.dump_misses);
+    platform_shutdown();
+    video_shutdown();
+    audio_shutdown();
+    return 0;
+}

@@ -1,0 +1,37 @@
+# Game data and copyrighted assets: never committed
+roms/
+*.zip
+*.7z
+*.rar
+cdda/
+SOUND6V4.Z80
+
+# Build and compilation outputs
+build/
+bin/
+out/
+generated/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+
+# Recompilation scratch and profile dumps
+entries*.txt
+re/out/
+
+# Audio and graphic dumps
+*.wav
+*.ppm
+*.png
+!docs/**/*.png
+!vita/**/*.png
+
+# System and IDE files
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+dist/
+kof95sr_full_git_backup.zip

@@ -1,0 +1,215 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version tag (e.g. v1.0.0)'
+        required: false
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: kof95-linux-x86_64.tar.gz
+          - os: windows-latest
+            artifact_name: kof95-windows-x64.zip
+          - os: macos-latest
+            artifact_name: kof95-macos.zip
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ROMs from Secret (optional)
+        shell: bash
+        env:
+          ROM_ZIP_B64: ${{ secrets.KOF95_ROMS_BASE64 || secrets.KOF95_ROMS || secrets.ROMS_BASE64 || secrets.ROM_BASE64 }}
+          ROM_URL: ${{ secrets.KOF95_ROM_URL || secrets.ROM_URL }}
+        run: |
+          mkdir -p roms
+          if [ -n "$ROM_ZIP_B64" ]; then
+            echo "Unpacking ROMs from secret..."
+            echo "$ROM_ZIP_B64" | base64 -d > roms/roms.zip || true
+            unzip -o roms/roms.zip -d roms/ || true
+            rm -f roms/roms.zip
+          elif [ -n "$ROM_URL" ]; then
+            echo "Downloading ROMs from secure URL..."
+            curl -sL -o roms/roms.zip "$ROM_URL"
+            unzip -o roms/roms.zip -d roms/ || true
+            rm -f roms/roms.zip
+          fi
+          # Flatten nested directories if unzipped into a subfolder
+          find roms -mindepth 2 -type f -exec mv -n {} roms/ \; 2>/dev/null || true
+          echo "ROMs present in roms/:"
+          ls -la roms/
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build libsdl2-dev libgl1-mesa-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install sdl2 cmake ninja
+
+      - name: Build & Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ROM_FLAG=""
+          if [ -d "roms" ] && [ "$(ls -A roms 2>/dev/null)" ]; then
+            ROM_FLAG="-DKOF95_ROM_DIR=$(pwd)/roms"
+          fi
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $ROM_FLAG
+          cmake --build build --target kof95 -j$(nproc)
+          strip build/kof95 || true
+
+          mkdir -p dist
+          tar -czvf dist/kof95-linux-x86_64.tar.gz -C build kof95
+
+      - name: Build & Package (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          ROM_FLAG=""
+          if [ -d "roms" ] && [ "$(ls -A roms 2>/dev/null)" ]; then
+            ROM_FLAG="-DKOF95_ROM_DIR=$(pwd)/roms"
+          fi
+          cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release $ROM_FLAG
+          cmake --build build --target kof95 -j$(sysctl -n hw.ncpu)
+          strip build/kof95 || true
+
+          mkdir -p dist mac_pkg
+          cp build/kof95 mac_pkg/
+          cmake -E tar cfv dist/kof95-macos.zip --format=zip mac_pkg
+
+      - name: Install dependencies (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          curl -sL -o SDL2.zip https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-devel-2.30.8-VC.zip
+          7z x SDL2.zip -oC:/SDL2 -y
+
+      - name: Build & Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          ROM_FLAG=""
+          if [ -d "roms" ] && [ "$(ls -A roms 2>/dev/null)" ]; then
+            ROM_FLAG="-DKOF95_ROM_DIR=$(pwd)/roms"
+          fi
+          cmake -B build -A x64 -DCMAKE_BUILD_TYPE=Release -DSDL2_DIR="C:/SDL2/SDL2-2.30.8/cmake" -DCMAKE_PREFIX_PATH="C:/SDL2/SDL2-2.30.8" $ROM_FLAG
+          cmake --build build --config Release --target kof95
+
+          mkdir -p dist win_pkg
+          cp build/Release/kof95.exe win_pkg/ 2>/dev/null || cp build/kof95.exe win_pkg/
+          cp C:/SDL2/SDL2-2.30.8/lib/x64/SDL2.dll win_pkg/ 2>/dev/null || true
+          cmake -E tar cfv dist/kof95-windows-x64.zip --format=zip win_pkg
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/*
+
+  build-vita:
+    name: Build (PS Vita .vpk)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup ROMs from Secret (optional)
+        shell: bash
+        env:
+          ROM_ZIP_B64: ${{ secrets.KOF95_ROMS_BASE64 || secrets.KOF95_ROMS || secrets.ROMS_BASE64 || secrets.ROM_BASE64 }}
+          ROM_URL: ${{ secrets.KOF95_ROM_URL || secrets.ROM_URL }}
+        run: |
+          mkdir -p roms
+          if [ -n "$ROM_ZIP_B64" ]; then
+            echo "Unpacking ROMs from secret..."
+            echo "$ROM_ZIP_B64" | base64 -d > roms/roms.zip || true
+            unzip -o roms/roms.zip -d roms/ || true
+            rm -f roms/roms.zip
+          elif [ -n "$ROM_URL" ]; then
+            echo "Downloading ROMs from secure URL..."
+            curl -sL -o roms/roms.zip "$ROM_URL"
+            unzip -o roms/roms.zip -d roms/ || true
+            rm -f roms/roms.zip
+          fi
+          find roms -mindepth 2 -type f -exec mv -n {} roms/ \; 2>/dev/null || true
+
+      - name: Generate host recompilation tables (if ROMs present)
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+          ROM_FLAG=""
+          if [ -d "roms" ] && [ "$(ls -A roms 2>/dev/null)" ]; then
+            ROM_FLAG="-DKOF95_ROM_DIR=$(pwd)/roms"
+          fi
+          cmake -B build/recomp -G Ninja -DCMAKE_BUILD_TYPE=Release $ROM_FLAG
+          cmake --build build/recomp --target kof95 -j$(nproc)
+
+      - name: Cross-Compile PS Vita VPK via VitaSDK
+        shell: bash
+        run: |
+          ROM_FLAG=""
+          if [ -d "roms" ] && [ "$(ls -A roms 2>/dev/null)" ]; then
+            ROM_FLAG="-DKOF95_ROM_DIR=/work/roms"
+          fi
+          docker run --rm -v "$PWD:/work" -w /work vitasdk/vitasdk:latest sh -c "
+            cmake -S . -B build/vita -DCMAKE_TOOLCHAIN_FILE=cmake/vita.toolchain.cmake -DCMAKE_BUILD_TYPE=Release $ROM_FLAG &&
+            cmake --build build/vita --target kof95.vpk-vpk -j\$(nproc)
+          "
+          mkdir -p dist
+          cp build/vita/kof95.vpk dist/kof95-psvita.vpk
+
+      - name: Upload PS Vita VPK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kof95-psvita.vpk
+          path: dist/kof95-psvita.vpk
+
+  release:
+    name: Publish GitHub Release
+    needs: [build, build-vita]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release_assets
+          merge-multiple: true
+
+      - name: Create Release and Upload Assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.version || github.ref_name }}
+          files: release_assets/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true

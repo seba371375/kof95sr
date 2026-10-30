@@ -1,0 +1,930 @@
+diff --git a/kof95_dips.cfg b/kof95_dips.cfg
+index fd9e4d3..3977652 100644
+--- a/kof95_dips.cfg
++++ b/kof95_dips.cfg
+@@ -1,10 +1,18 @@
+-difficulty=1
+-blood=1
+-dip1=0
+-dip2=0
+-dip3=0
+-dip4=0
+-dip5=0
+-dip6=0
+-dip7=0
+-dip8=0
++# Neo Geo MVS DIP Switches & Game Configuration
++# 0 = OFF (Normal), 1 = ON (Active)
++
++difficulty=1   # Game Difficulty: 1 (Easy) to 8 (Hardest), default 4 (Normal)
++blood=1        # Blood Color: 1 = Red Blood ON, 0 = Censored/Off
++duplicates=1   # Duplicate Characters in Team Edit: 1 = ON, 0 = OFF
++random_select=1# Random Select (?) Slot on Grid: 1 = ON, 0 = OFF
++
++dip1=0 # Test Mode (Enter Hardware Setting)
++dip2=0 # Coin Chute 2
++dip3=0 # Controller Type (Mahjong)
++dip4=0 # Cabinet / Multi-Link
++dip5=1 # Demo Sound / Language
++dip6=0 # Screen Stop / Flip
++dip7=0 # Free Play
++dip8=0 # Hardware Freeze (Pause)
++
++dips=0x10
+diff --git a/neogeorecomp/src/io.c b/neogeorecomp/src/io.c
+index 6208296..d2abba4 100644
+--- a/neogeorecomp/src/io.c
++++ b/neogeorecomp/src/io.c
+@@ -77,9 +77,111 @@ static void rtc_write(uint8_t v) {
+     s_rtc.clk = clk; s_rtc.stb = stb;
+ }
+ 
++#include <stdlib.h>
++#include <time.h>
++
+ static uint8_t s_dips = 0;
+ static uint8_t s_difficulty = 4; // 1 (Easy) to 8 (Hardest), default 4 (Normal)
+ static uint8_t s_blood = 1;      // 1 = ON, 0 = OFF
++static uint8_t s_allow_duplicates = 1; // 1 = ON, 0 = OFF
++static uint8_t s_random_select = 1;    // 1 = ON, 0 = OFF
++
++static bool s_p1_random_slots[3] = {false, false, false};
++static bool s_p2_random_slots[3] = {false, false, false};
++static bool s_need_stage_reroll = false;
++static bool s_p1_on_random = false;
++static bool s_p2_on_random = false;
++static int  s_p1_random_col = 3;
++static int  s_p2_random_col = 5;
++
++static const char *s_fighter_names[24] = {
++    "Terry", "Andy", "Joe", "Athena", "Kensou", "Chin",
++    "Kyo", "Benimaru", "Daimon", "Iori", "Eiji", "Billy",
++    "Ryo", "Robert", "Takuma", "Heidern", "Ralf", "Clark",
++    "Kim", "Chang", "Choi", "Yuri", "Mai", "King"
++};
++
++/* Grid coordinates (Row Y, Col X) on the 4x9 character matrix at $5BFD0 */
++static const uint8_t s_fighter_yx[24][2] = {
++    {1, 0}, /* Fighter  0: Terry */
++    {1, 1}, /* Fighter  1: Andy */
++    {1, 2}, /* Fighter  2: Joe */
++    {1, 3}, /* Fighter  3: Athena */
++    {1, 4}, /* Fighter  4: Kensou */
++    {1, 5}, /* Fighter  5: Chin */
++    {0, 0}, /* Fighter  6: Kyo */
++    {0, 1}, /* Fighter  7: Benimaru */
++    {0, 2}, /* Fighter  8: Daimon */
++    {2, 6}, /* Fighter  9: Iori */
++    {2, 7}, /* Fighter 10: Eiji */
++    {2, 8}, /* Fighter 11: Billy */
++    {1, 6}, /* Fighter 12: Ryo */
++    {1, 7}, /* Fighter 13: Robert */
++    {1, 8}, /* Fighter 14: Takuma */
++    {0, 6}, /* Fighter 15: Heidern */
++    {0, 7}, /* Fighter 16: Ralf */
++    {0, 8}, /* Fighter 17: Clark */
++    {0, 3}, /* Fighter 18: Kim */
++    {0, 4}, /* Fighter 19: Chang */
++    {0, 5}, /* Fighter 20: Choi */
++    {2, 0}, /* Fighter 21: Yuri */
++    {2, 1}, /* Fighter 22: Mai */
++    {2, 2}, /* Fighter 23: King */
++};
++
++static uint8_t roll_random_char(const uint8_t *existing_slots, int num_existing) {
++    extern int64_t ng_frame_start;
++    static bool s_seeded = false;
++    if (!s_seeded) {
++        srand((unsigned int)time(NULL));
++        s_seeded = true;
++    }
++
++    uint32_t entropy = (uint32_t)(rand() ^ (ng_frame_start & 0xFFFFFFFF));
++    uint8_t rnd = (uint8_t)(entropy % 24);
++    if (!s_allow_duplicates && num_existing > 0 && existing_slots != NULL) {
++        for (int attempt = 0; attempt < 100; attempt++) {
++            bool dup = false;
++            for (int i = 0; i < num_existing; i++) {
++                if (existing_slots[i] == rnd) {
++                    dup = true;
++                    break;
++                }
++            }
++            if (!dup) break;
++            entropy = (uint32_t)(rand() ^ ((ng_frame_start + (int64_t)(attempt * 31 + 7)) & 0xFFFFFFFF));
++            rnd = (uint8_t)(entropy % 24);
++        }
++    }
++    return rnd;
++}
++
++static uint8_t roll_random_char_for_team(const uint8_t *team, int slot_to_roll) {
++    extern int64_t ng_frame_start;
++    static bool s_seeded = false;
++    if (!s_seeded) {
++        srand((unsigned int)time(NULL));
++        s_seeded = true;
++    }
++
++    uint32_t entropy = (uint32_t)(rand() ^ (ng_frame_start & 0xFFFFFFFF));
++    uint8_t rnd = (uint8_t)(entropy % 24);
++    if (!s_allow_duplicates) {
++        for (int attempt = 0; attempt < 100; attempt++) {
++            bool dup = false;
++            for (int i = 0; i < 3; i++) {
++                if (i != slot_to_roll && team[i] == rnd) {
++                    dup = true;
++                    break;
++                }
++            }
++            if (!dup) break;
++            entropy = (uint32_t)(rand() ^ ((ng_frame_start + (int64_t)(attempt * 31 + 7)) & 0xFFFFFFFF));
++            rnd = (uint8_t)(entropy % 24);
++        }
++    }
++    return rnd;
++}
+ 
+ uint8_t io_get_dipswitches(void) { return s_dips; }
+ void io_set_dipswitches(uint8_t dips) { s_dips = dips; }
+@@ -89,11 +191,603 @@ void io_set_dipswitch_bit(int bit, int val) {
+     else s_dips &= (uint8_t)~(1 << bit);
+ }
+ 
++uint8_t io_get_allow_duplicates(void) { return s_allow_duplicates; }
++void io_set_allow_duplicates(uint8_t val) { s_allow_duplicates = val ? 1 : 0; }
++
++uint8_t io_get_random_select(void) { return s_random_select; }
++void io_set_random_select(uint8_t val) { s_random_select = val ? 1 : 0; }
++
++static int io_find_select_task(const uint8_t *w, int player) {
++    if (!w) return -1;
++    for (int off = 0x500; off <= 0x900; off += 0x100) {
++        uint32_t pc = ((uint32_t)w[off] << 24) | ((uint32_t)w[off+1] << 16) |
++                      ((uint32_t)w[off+2] << 8) | (uint32_t)w[off+3];
++        bool is_sel = (pc >= 0x0003E600 && pc <= 0x0003ECDA && pc != 0x0003EB50);
++        if (is_sel && w[off + 0x130] == player) {
++            return off;
++        }
++    }
++    return -1;
++}
++
+ void io_sync_soft_dips(void) {
+     uint8_t *w = bus_wram();
+-    if (w && w[0xFEE1] == 0xFF) {
+-        w[0xFD8E] = (uint8_t)(s_difficulty - 1);
+-        w[0xFD8C] = s_blood ? 0 : 1;
++    if (!w) return;
++
++    /* ---- 1. Duplicate Characters in Team Edit ---- */
++    /* Duplicates are handled natively in the character select routine via io_get_allow_duplicates() */
++
++    /* ---- 2. Random Select (?) Navigation and Picking ---- */
++    if (s_random_select) {
++        int p1_task_off = io_find_select_task(w, 0);
++        int p2_task_off = io_find_select_task(w, 1);
++
++        bool p1_selecting = (p1_task_off >= 0) && (w[0xA840] == 0 || w[0xA842] < 3);
++        bool p2_selecting = (p2_task_off >= 0) && (w[0xA850] == 0 || w[0xA852] < 3);
++
++        static bool s_p1_was_sel = false;
++        if (p1_selecting && !s_p1_was_sel) {
++            s_p1_random_slots[0] = false;
++            s_p1_random_slots[1] = false;
++            s_p1_random_slots[2] = false;
++            s_p1_on_random = false;
++            s_need_stage_reroll = false;
++        }
++        s_p1_was_sel = p1_selecting;
++
++        static bool s_p2_was_sel = false;
++        if (p2_selecting && !s_p2_was_sel) {
++            s_p2_random_slots[0] = false;
++            s_p2_random_slots[1] = false;
++            s_p2_random_slots[2] = false;
++            s_p2_on_random = false;
++        }
++        s_p2_was_sel = p2_selecting;
++
++        // Player 1
++        static uint8_t s_p1_prev_in = 0;
++        uint8_t p1_trig = s_in.p1 & ~s_p1_prev_in;
++        s_p1_prev_in = s_in.p1;
++
++        if (p1_selecting) {
++            uint8_t cur_slot = w[0xA842];
++            if (cur_slot > 2) cur_slot = 2;
++            uint8_t cur_char = w[0xA843 + cur_slot];
++
++            if (!s_p1_on_random) {
++                if (p1_trig & NG_A) {
++                    if (w[0xA840] == 0) {
++                        s_p1_random_slots[0] = false;
++                        s_p1_random_slots[1] = false;
++                        s_p1_random_slots[2] = false;
++                    } else {
++                        s_p1_random_slots[cur_slot] = false;
++                    }
++                }
++                // Enter random select from adjacent fighters:
++                // From King (23) -> RIGHT -> Col 3
++                // From Iori (9) -> LEFT -> Col 5
++                // From Athena (3), Kensou (4) -> DOWN -> Col 3
++                // From Chin (5) -> DOWN -> Col 5
++                if (cur_char == 23 && (p1_trig & NG_RIGHT)) {
++                    s_p1_on_random = true;
++                    s_p1_random_col = 3;
++                    audio_command(0x60);
++                    s_in.p1 &= (uint8_t)~NG_RIGHT;
++                } else if (cur_char == 9 && (p1_trig & NG_LEFT)) {
++                    s_p1_on_random = true;
++                    s_p1_random_col = 5;
++                    audio_command(0x60);
++                    s_in.p1 &= (uint8_t)~NG_LEFT;
++                } else if ((cur_char == 3 || cur_char == 4) && (p1_trig & NG_DOWN)) {
++                    s_p1_on_random = true;
++                    s_p1_random_col = 3;
++                    audio_command(0x60);
++                    s_in.p1 &= (uint8_t)~NG_DOWN;
++                } else if (cur_char == 5 && (p1_trig & NG_DOWN)) {
++                    s_p1_on_random = true;
++                    s_p1_random_col = 5;
++                    audio_command(0x60);
++                    s_in.p1 &= (uint8_t)~NG_DOWN;
++                }
++            } else {
++                w[0xA843 + cur_slot] = 24; // Hide game cursor (Saisyu dummy ID)
++                lspc_vram[0x8200 + 0x1B] = 0; // Hide 1P cursor bracket sprite while hovering [?]
++                if (p1_trig & NG_LEFT) {
++                    if (s_p1_random_col == 5) {
++                        s_p1_random_col = 3;
++                        audio_command(0x60);
++                    } else {
++                        s_p1_on_random = false;
++                        w[p1_task_off + 0xD3] = s_fighter_yx[23][0];
++                        w[p1_task_off + 0xD2] = s_fighter_yx[23][1];
++                        w[0xA843 + cur_slot] = 23; // Return to King
++                        audio_command(0x60);
++                    }
++                } else if (p1_trig & NG_RIGHT) {
++                    if (s_p1_random_col == 3) {
++                        s_p1_random_col = 5;
++                        audio_command(0x60);
++                    } else {
++                        s_p1_on_random = false;
++                        w[p1_task_off + 0xD3] = s_fighter_yx[9][0];
++                        w[p1_task_off + 0xD2] = s_fighter_yx[9][1];
++                        w[0xA843 + cur_slot] = 9; // Return to Iori
++                        audio_command(0x60);
++                    }
++                } else if (p1_trig & NG_UP) {
++                    s_p1_on_random = false;
++                    uint8_t target = (s_p1_random_col == 3) ? 3 : 5;
++                    w[p1_task_off + 0xD3] = s_fighter_yx[target][0];
++                    w[p1_task_off + 0xD2] = s_fighter_yx[target][1];
++                    w[0xA843 + cur_slot] = target;
++                    audio_command(0x60);
++                } else if (p1_trig & NG_A) {
++                    if (w[0xA840] == 1) { // Team Edit
++                        s_p1_random_slots[cur_slot] = true;
++                        uint8_t rnd = roll_random_char(&w[0xA843], cur_slot);
++                        if (cur_slot >= 2) s_p1_on_random = false;
++                        else s_p1_on_random = true;
++                        w[p1_task_off + 0xD3] = s_fighter_yx[rnd][0]; // Row (Y)
++                        w[p1_task_off + 0xD2] = s_fighter_yx[rnd][1]; // Col (X)
++                        w[0xA843 + cur_slot] = rnd;
++                        printf("[RANDOM SELECT] P1 Slot %d picked random: Fighter ID %d (pos Y=%d, X=%d)\n",
++                               cur_slot + 1, rnd, s_fighter_yx[rnd][0], s_fighter_yx[rnd][1]);
++                    } else { // Team Play
++                        s_p1_random_slots[0] = true;
++                        s_p1_random_slots[1] = true;
++                        s_p1_random_slots[2] = true;
++                        uint8_t rnd0 = roll_random_char(NULL, 0);
++                        uint8_t rnd1 = roll_random_char(&rnd0, 1);
++                        uint8_t rnds[2] = {rnd0, rnd1};
++                        uint8_t rnd2 = roll_random_char(rnds, 2);
++                        w[0xA843] = rnd0;
++                        w[0xA844] = rnd1;
++                        w[0xA845] = rnd2;
++                        w[0xA842] = 3;
++                        w[0xA840] = 1;
++                        s_p1_on_random = false;
++                        ng_w32(0x100000 + p1_task_off, 0x0003FBC4u);
++                        audio_command(0x61);
++                        printf("[RANDOM SELECT] P1 Team Play picked random team: [%d, %d, %d]\n",
++                               rnd0, rnd1, rnd2);
++                        s_in.p1 &= (uint8_t)~NG_A;
++                    }
++                }
++                s_in.p1 &= (uint8_t)~(NG_UP | NG_DOWN | NG_LEFT | NG_RIGHT);
++            }
++        } else {
++            s_p1_on_random = false;
++        }
++
++        // Player 2
++        static uint8_t s_p2_prev_in = 0;
++        uint8_t p2_trig = s_in.p2 & ~s_p2_prev_in;
++        s_p2_prev_in = s_in.p2;
++
++        if (p2_selecting) {
++            uint8_t cur_slot = w[0xA852];
++            if (cur_slot > 2) cur_slot = 2;
++            uint8_t cur_char = w[0xA853 + cur_slot];
++
++            if (!s_p2_on_random) {
++                if (p2_trig & NG_A) {
++                    if (w[0xA850] == 0) {
++                        s_p2_random_slots[0] = false;
++                        s_p2_random_slots[1] = false;
++                        s_p2_random_slots[2] = false;
++                    } else {
++                        s_p2_random_slots[cur_slot] = false;
++                    }
++                }
++                if (cur_char == 23 && (p2_trig & NG_RIGHT)) {
++                    s_p2_on_random = true;
++                    s_p2_random_col = 3;
++                    audio_command(0x60);
++                    s_in.p2 &= (uint8_t)~NG_RIGHT;
++                } else if (cur_char == 9 && (p2_trig & NG_LEFT)) {
++                    s_p2_on_random = true;
++                    s_p2_random_col = 5;
++                    audio_command(0x60);
++                    s_in.p2 &= (uint8_t)~NG_LEFT;
++                } else if ((cur_char == 3 || cur_char == 4) && (p2_trig & NG_DOWN)) {
++                    s_p2_on_random = true;
++                    s_p2_random_col = 3;
++                    audio_command(0x60);
++                    s_in.p2 &= (uint8_t)~NG_DOWN;
++                } else if (cur_char == 5 && (p2_trig & NG_DOWN)) {
++                    s_p2_on_random = true;
++                    s_p2_random_col = 5;
++                    audio_command(0x60);
++                    s_in.p2 &= (uint8_t)~NG_DOWN;
++                }
++            } else {
++                w[0xA853 + cur_slot] = 24; // Hide game cursor (Saisyu dummy ID)
++                lspc_vram[0x8200 + 0x1C] = 0; // Hide 2P cursor bracket sprite while hovering [?]
++                if (p2_trig & NG_LEFT) {
++                    if (s_p2_random_col == 5) {
++                        s_p2_random_col = 3;
++                        audio_command(0x60);
++                    } else {
++                        s_p2_on_random = false;
++                        w[p2_task_off + 0xD3] = s_fighter_yx[23][0];
++                        w[p2_task_off + 0xD2] = s_fighter_yx[23][1];
++                        w[0xA853 + cur_slot] = 23; // Return to King
++                        audio_command(0x60);
++                    }
++                } else if (p2_trig & NG_RIGHT) {
++                    if (s_p2_random_col == 3) {
++                        s_p2_random_col = 5;
++                        audio_command(0x60);
++                    } else {
++                        s_p2_on_random = false;
++                        w[p2_task_off + 0xD3] = s_fighter_yx[9][0];
++                        w[p2_task_off + 0xD2] = s_fighter_yx[9][1];
++                        w[0xA853 + cur_slot] = 9; // Return to Iori
++                        audio_command(0x60);
++                    }
++                } else if (p2_trig & NG_UP) {
++                    s_p2_on_random = false;
++                    uint8_t target = (s_p2_random_col == 3) ? 3 : 5;
++                    w[p2_task_off + 0xD3] = s_fighter_yx[target][0];
++                    w[p2_task_off + 0xD2] = s_fighter_yx[target][1];
++                    w[0xA853 + cur_slot] = target;
++                    audio_command(0x60);
++                } else if (p2_trig & NG_A) {
++                    if (w[0xA850] == 1) { // Team Edit
++                        s_p2_random_slots[cur_slot] = true;
++                        uint8_t rnd = roll_random_char(&w[0xA853], cur_slot);
++                        if (cur_slot >= 2) s_p2_on_random = false;
++                        else s_p2_on_random = true;
++                        w[p2_task_off + 0xD3] = s_fighter_yx[rnd][0]; // Row (Y)
++                        w[p2_task_off + 0xD2] = s_fighter_yx[rnd][1]; // Col (X)
++                        w[0xA853 + cur_slot] = rnd;
++                        printf("[RANDOM SELECT] P2 Slot %d picked random: Fighter ID %d (pos Y=%d, X=%d)\n",
++                               cur_slot + 1, rnd, s_fighter_yx[rnd][0], s_fighter_yx[rnd][1]);
++                    } else { // Team Play
++                        s_p2_random_slots[0] = true;
++                        s_p2_random_slots[1] = true;
++                        s_p2_random_slots[2] = true;
++                        uint8_t rnd0 = roll_random_char(NULL, 0);
++                        uint8_t rnd1 = roll_random_char(&rnd0, 1);
++                        uint8_t rnds[2] = {rnd0, rnd1};
++                        uint8_t rnd2 = roll_random_char(rnds, 2);
++                        w[0xA853] = rnd0;
++                        w[0xA854] = rnd1;
++                        w[0xA855] = rnd2;
++                        w[0xA852] = 3;
++                        w[0xA850] = 1;
++                        s_p2_on_random = false;
++                        ng_w32(0x100000 + p2_task_off, 0x0003FBC4u);
++                        audio_command(0x61);
++                        printf("[RANDOM SELECT] P2 Team Play picked random team: [%d, %d, %d]\n",
++                               rnd0, rnd1, rnd2);
++                        s_in.p2 &= (uint8_t)~NG_A;
++                    }
++                }
++                s_in.p2 &= (uint8_t)~(NG_UP | NG_DOWN | NG_LEFT | NG_RIGHT);
++            }
++        } else {
++            s_p2_on_random = false;
++        }
++
++        if (s_need_stage_reroll) {
++            uint32_t t0 = ((uint32_t)w[0x500] << 24) | ((uint32_t)w[0x501] << 16) |
++                          ((uint32_t)w[0x502] << 8) | (uint32_t)w[0x503];
++            if (t0 == 0x0003E8A4u || t0 == 0x0003F552u) {
++                io_on_order_select();
++            }
++        }
++    }
++}
++
++/* ---- 3. Post-Render Frame: Draw (?) Icon on Character Select Screen ---- */
++static void draw_random_card(uint32_t *fb, int rx, int ry, int rw, int rh, bool p1_hover, bool p2_hover) {
++    if (!fb) return;
++
++    // 1. Crisp white/silver arcade card frame border (1px)
++    for (int y = ry; y < ry + rh; y++) {
++        if (y < 0 || y >= NG_SCREEN_H) continue;
++        for (int x = rx; x < rx + rw; x++) {
++            if (x < 0 || x >= NG_SCREEN_W) continue;
++            if (x == rx || x == rx + rw - 1 || y == ry || y == ry + rh - 1) {
++                fb[y * NG_SCREEN_W + x] = 0xFFFFFFFF; // Pure white outer border
++            } else if (x == rx + 1 || y == ry + 1) {
++                fb[y * NG_SCREEN_W + x] = 0xFF2A3D66; // Top-left inner highlight
++            } else if (x == rx + rw - 2 || y == ry + rh - 2) {
++                fb[y * NG_SCREEN_W + x] = 0xFF050810; // Bottom-right inner shadow
++            } else {
++                int rel_y = y - ry;
++                uint32_t bg = (rel_y < rh / 3) ? 0xFF141E34 :
++                              (rel_y < 2 * rh / 3) ? 0xFF0E1526 : 0xFF080D1A;
++                fb[y * NG_SCREEN_W + x] = bg;
++            }
++        }
++    }
++
++    // 2. Arcade gold '?' glyph with 3D shadow (12x16)
++    static const uint16_t s_qm_glyph[16] = {
++        0x03C0, //      ####
++        0x07E0, //     ######
++        0x0E70, //    ###  ###
++        0x0E70, //    ###  ###
++        0x0070, //         ###
++        0x00E0, //        ###
++        0x01C0, //       ###
++        0x0380, //      ###
++        0x0300, //      ##
++        0x0300, //      ##
++        0x0000, //
++        0x0000, //
++        0x0300, //      ##
++        0x0380, //      ###
++        0x0380, //      ###
++        0x0000
++    };
++
++    const int gx = rx + (rw - 12) / 2;
++    const int gy = ry + (rh - 16) / 2;
++    for (int r = 0; r < 16; r++) {
++        int py = gy + r;
++        if (py < 0 || py >= NG_SCREEN_H) continue;
++        uint16_t row = s_qm_glyph[r];
++        for (int c = 0; c < 12; c++) {
++            int px = gx + c;
++            if (px < 0 || px >= NG_SCREEN_W) continue;
++            if ((row >> (11 - c)) & 1) {
++                if (px + 1 < rx + rw - 1 && py + 1 < ry + rh - 1) {
++                    fb[(py + 1) * NG_SCREEN_W + (px + 1)] = 0xFF020408;
++                }
++                uint32_t col = (r < 4) ? 0xFFFFF176 :
++                               (r < 9) ? 0xFFFFD700 :
++                               (r < 12) ? 0xFFFFB300 : 0xFFFFC107;
++                fb[py * NG_SCREEN_W + px] = col;
++            }
++        }
++    }
++
++    // 3. Pixel-perfect 1P cursor bracket & "1P" tag
++    if (p1_hover) {
++        uint32_t col = 0xFF00B0FF; // Cyan / Arcade 1P Blue
++        // Top-left L-bracket
++        for (int i = 0; i < 7; i++) {
++            if (rx - 1 + i < NG_SCREEN_W) {
++                fb[(ry - 1) * NG_SCREEN_W + (rx - 1 + i)] = col;
++                fb[ry * NG_SCREEN_W + (rx - 1 + i)] = col;
++            }
++            if (ry - 1 + i < NG_SCREEN_H) {
++                fb[(ry - 1 + i) * NG_SCREEN_W + (rx - 1)] = col;
++                fb[(ry - 1 + i) * NG_SCREEN_W + rx] = col;
++            }
++        }
++        // Bottom-right L-bracket
++        for (int i = 0; i < 7; i++) {
++            if (rx + rw - 6 + i < NG_SCREEN_W) {
++                fb[(ry + rh - 1) * NG_SCREEN_W + (rx + rw - 6 + i)] = col;
++                fb[(ry + rh) * NG_SCREEN_W + (rx + rw - 6 + i)] = col;
++            }
++            if (ry + rh - 6 + i < NG_SCREEN_H) {
++                fb[(ry + rh - 6 + i) * NG_SCREEN_W + (rx + rw - 1)] = col;
++                fb[(ry + rh - 6 + i) * NG_SCREEN_W + (rx + rw)] = col;
++            }
++        }
++    }
++
++    // 4. Pixel-perfect 2P cursor bracket
++    if (p2_hover) {
++        uint32_t col = 0xFFFF3333; // Arcade 2P Red
++        // Top-right L-bracket
++        for (int i = 0; i < 7; i++) {
++            if (rx + rw - 6 + i < NG_SCREEN_W) {
++                fb[(ry - 1) * NG_SCREEN_W + (rx + rw - 6 + i)] = col;
++                fb[ry * NG_SCREEN_W + (rx + rw - 6 + i)] = col;
++            }
++            if (ry - 1 + i < NG_SCREEN_H) {
++                fb[(ry - 1 + i) * NG_SCREEN_W + (rx + rw - 1)] = col;
++                fb[(ry - 1 + i) * NG_SCREEN_W + (rx + rw)] = col;
++            }
++        }
++        // Bottom-left L-bracket
++        for (int i = 0; i < 7; i++) {
++            if (rx - 1 + i < NG_SCREEN_W) {
++                fb[(ry + rh - 1) * NG_SCREEN_W + (rx - 1 + i)] = col;
++                fb[(ry + rh) * NG_SCREEN_W + (rx - 1 + i)] = col;
++            }
++            if (ry + rh - 6 + i < NG_SCREEN_H) {
++                fb[(ry + rh - 6 + i) * NG_SCREEN_W + (rx - 1)] = col;
++                fb[(ry + rh - 6 + i) * NG_SCREEN_W + rx] = col;
++            }
++        }
++    }
++}
++
++#include "osd_font.h"
++
++static void io_draw_text(uint32_t *fb, int x, int y, const char *str, uint32_t color) {
++    if (!fb || !str) return;
++    int cur_x = x;
++    while (*str) {
++        char c = *str++;
++        if (c < 32 || c > 126) c = ' ';
++        const uint8_t *glyph = font_8x8[c - 32];
++        for (int row = 0; row < 8; row++) {
++            int py = y + row;
++            if (py < 0 || py >= NG_SCREEN_H) continue;
++            uint8_t bits = glyph[row];
++            for (int col = 0; col < 8; col++) {
++                int px = cur_x + col;
++                if (px < 0 || px >= NG_SCREEN_W) continue;
++                if ((bits >> (7 - col)) & 1) {
++                    if (px + 1 < NG_SCREEN_W && py + 1 < NG_SCREEN_H) {
++                        fb[(py + 1) * NG_SCREEN_W + (px + 1)] = 0xFF000000;
++                    }
++                    fb[py * NG_SCREEN_W + px] = color;
++                }
++            }
++        }
++        cur_x += 8;
++    }
++}
++
++void io_post_render_frame(uint32_t *fb) {
++    if (!fb || !s_random_select) return;
++
++    uint8_t *w = bus_wram();
++    if (!w) return;
++
++    int p1_task_off = io_find_select_task(w, 0);
++    int p2_task_off = io_find_select_task(w, 1);
++
++    bool selecting = (p1_task_off >= 0 && w[0xA842] < 3) ||
++                     (p2_task_off >= 0 && w[0xA852] < 3);
++    if (!selecting) {
++        s_p1_on_random = false;
++        s_p2_on_random = false;
++        return;
++    }
++
++    // Buffer clean character cards for King (x=80..111, y=88..125) and Iori (x=208..239, y=88..125)
++    static uint32_t s_king_clean[34 * 39];
++    static uint32_t s_iori_clean[34 * 39];
++    static bool s_has_king_clean = false;
++    static bool s_has_iori_clean = false;
++
++    uint8_t p1_char = w[0xA843 + (w[0xA842] < 3 ? w[0xA842] : 2)];
++    if (!s_p1_on_random && !s_p2_on_random) {
++        if (p1_char != 23) {
++            for (int y = 0; y < 39; y++) {
++                for (int x = 0; x < 34; x++) {
++                    s_king_clean[y * 34 + x] = fb[(88 + y) * NG_SCREEN_W + (79 + x)];
++                }
++            }
++            s_has_king_clean = true;
++        }
++        if (p1_char != 9) {
++            for (int y = 0; y < 39; y++) {
++                for (int x = 0; x < 34; x++) {
++                    s_iori_clean[y * 34 + x] = fb[(88 + y) * NG_SCREEN_W + (207 + x)];
++                }
++            }
++            s_has_iori_clean = true;
++        }
++    }
++
++    // Restore pristine King or Iori portrait when player is on (?)
++    if (s_p1_on_random) {
++        if (s_p1_random_col == 3 && s_has_king_clean) {
++            for (int y = 0; y < 39; y++) {
++                for (int x = 0; x < 34; x++) {
++                    fb[(88 + y) * NG_SCREEN_W + (79 + x)] = s_king_clean[y * 34 + x];
++                }
++            }
++        } else if (s_p1_random_col == 5 && s_has_iori_clean) {
++            for (int y = 0; y < 39; y++) {
++                for (int x = 0; x < 34; x++) {
++                    fb[(88 + y) * NG_SCREEN_W + (207 + x)] = s_iori_clean[y * 34 + x];
++                }
++            }
++        }
++        // Character name bar for P1
++        for (int y = 137; y < 147; y++) {
++            for (int x = 16; x < 144; x++) {
++                fb[y * NG_SCREEN_W + x] = 0xFF755524;
++            }
++        }
++        io_draw_text(fb, 16, 138, "RANDOM SELECT", 0xFFFFD700);
++    }
++
++    if (s_p2_on_random) {
++        if (s_p2_random_col == 3 && s_has_king_clean) {
++            for (int y = 0; y < 39; y++) {
++                for (int x = 0; x < 34; x++) {
++                    fb[(88 + y) * NG_SCREEN_W + (79 + x)] = s_king_clean[y * 34 + x];
++                }
++            }
++        } else if (s_p2_random_col == 5 && s_has_iori_clean) {
++            for (int y = 0; y < 39; y++) {
++                for (int x = 0; x < 34; x++) {
++                    fb[(88 + y) * NG_SCREEN_W + (207 + x)] = s_iori_clean[y * 34 + x];
++                }
++            }
++        }
++        // Character name bar for P2
++        for (int y = 137; y < 147; y++) {
++            for (int x = 176; x < 304; x++) {
++                fb[y * NG_SCREEN_W + x] = 0xFF755524;
++            }
++        }
++        io_draw_text(fb, 176, 138, "RANDOM SELECT", 0xFFFFD700);
++    }
++
++    // Row 2 gap slots:
++    // Slot 3: x = 112, y = 96, w = 32, h = 30 (next to King)
++    // Slot 5: x = 176, y = 96, w = 32, h = 30 (next to Iori)
++    bool p1_on_col3 = s_p1_on_random && (s_p1_random_col == 3);
++    bool p1_on_col5 = s_p1_on_random && (s_p1_random_col == 5);
++    bool p2_on_col3 = s_p2_on_random && (s_p2_random_col == 3);
++    bool p2_on_col5 = s_p2_on_random && (s_p2_random_col == 5);
++
++    draw_random_card(fb, 112, 96, 32, 30, p1_on_col3, p2_on_col3);
++    draw_random_card(fb, 176, 96, 32, 30, p1_on_col5, p2_on_col5);
++}
++
++void io_on_order_select(void) {
++    if (!s_need_stage_reroll) return;
++    s_need_stage_reroll = false;
++
++    uint8_t *w = bus_wram();
++    if (!w) return;
++
++    bool p1_has_rnd = s_p1_random_slots[0] || s_p1_random_slots[1] || s_p1_random_slots[2];
++    bool p2_has_rnd = s_p2_random_slots[0] || s_p2_random_slots[1] || s_p2_random_slots[2];
++
++    if (!p1_has_rnd && !p2_has_rnd) return;
++
++    printf("[RANDOM RE-ROLL] Match concluded! Re-rolling random fighter slots...\n");
++
++    if (p1_has_rnd) {
++        uint8_t temp[3] = { w[0xA843], w[0xA844], w[0xA845] };
++        for (int s = 0; s < 3; s++) {
++            if (s_p1_random_slots[s]) temp[s] = 0xFF;
++        }
++        for (int s = 0; s < 3; s++) {
++            if (s_p1_random_slots[s]) {
++                uint8_t new_char = roll_random_char_for_team(temp, s);
++                temp[s] = new_char;
++                w[0xA843 + s] = new_char;
++                printf("[RANDOM RE-ROLL] P1 Slot %d -> %s (ID %d)\n",
++                       s + 1, s_fighter_names[new_char], new_char);
++            }
++        }
++    }
++
++    if (p2_has_rnd) {
++        uint8_t temp[3] = { w[0xA853], w[0xA854], w[0xA855] };
++        for (int s = 0; s < 3; s++) {
++            if (s_p2_random_slots[s]) temp[s] = 0xFF;
++        }
++        for (int s = 0; s < 3; s++) {
++            if (s_p2_random_slots[s]) {
++                uint8_t new_char = roll_random_char_for_team(temp, s);
++                temp[s] = new_char;
++                w[0xA853 + s] = new_char;
++                printf("[RANDOM RE-ROLL] P2 Slot %d -> %s (ID %d)\n",
++                       s + 1, s_fighter_names[new_char], new_char);
++            }
++        }
++    }
++}
++
++void io_on_audio_command(uint8_t cmd) {
++    // 0x30 = "Spring of this World" (Victory Demo screen BGM)
++    // 0x28 = "Vortex of Ambition" (Game Over / Continue BGM)
++    if (cmd == 0x30 || cmd == 0x28) {
++        bool has_rnd = s_p1_random_slots[0] || s_p1_random_slots[1] || s_p1_random_slots[2] ||
++                       s_p2_random_slots[0] || s_p2_random_slots[1] || s_p2_random_slots[2];
++        if (has_rnd) {
++            s_need_stage_reroll = true;
++            printf("[RANDOM SELECT] Match finished (sound cmd 0x%02X). Random slots will re-roll at next Order Select.\n", cmd);
++        }
+     }
+ }
+ 
+@@ -125,6 +819,10 @@ int io_load_dipswitches(const char *path) {
+             s_difficulty = (uint8_t)val;
+         } else if (sscanf(line, "blood=%d", &val) == 1) {
+             s_blood = val ? 1 : 0;
++        } else if (sscanf(line, "duplicates=%d", &val) == 1) {
++            s_allow_duplicates = val ? 1 : 0;
++        } else if (sscanf(line, "random_select=%d", &val) == 1) {
++            s_random_select = val ? 1 : 0;
+         } else if (sscanf(line, "dips=0x%x", &val) == 1 || sscanf(line, "dips=%d", &val) == 1) {
+             dips = (uint8_t)val;
+         }
+@@ -140,8 +838,10 @@ int io_save_dipswitches(const char *path) {
+     if (!f) return -1;
+     fprintf(f, "# Neo Geo MVS DIP Switches & Game Configuration\n");
+     fprintf(f, "# 0 = OFF (Normal), 1 = ON (Active)\n\n");
+-    fprintf(f, "difficulty=%d # Game Difficulty: 1 (Easy) to 8 (Hardest), default 4 (Normal)\n", s_difficulty);
+-    fprintf(f, "blood=%d      # Blood Color: 1 = Red Blood ON, 0 = Censored/Off\n\n", s_blood);
++    fprintf(f, "difficulty=%d   # Game Difficulty: 1 (Easy) to 8 (Hardest), default 4 (Normal)\n", s_difficulty);
++    fprintf(f, "blood=%d        # Blood Color: 1 = Red Blood ON, 0 = Censored/Off\n", s_blood);
++    fprintf(f, "duplicates=%d   # Duplicate Characters in Team Edit: 1 = ON, 0 = OFF\n", s_allow_duplicates);
++    fprintf(f, "random_select=%d# Random Select (?) Slot on Grid: 1 = ON, 0 = OFF\n\n", s_random_select);
+     fprintf(f, "dip1=%d # Test Mode (Enter Hardware Setting)\n", (s_dips >> 0) & 1);
+     fprintf(f, "dip2=%d # Coin Chute 2\n",                      (s_dips >> 1) & 1);
+     fprintf(f, "dip3=%d # Controller Type (Mahjong)\n",         (s_dips >> 2) & 1);
+@@ -161,6 +861,11 @@ void io_reset(int mvs) {
+     memset(&s_rtc, 0, sizeof(s_rtc));
+     s_rtc.tp_half = 12000000 / 64 / 2;
+     s_rtc.reg = rtc_now();
++    s_p1_on_random = false;
++    s_p2_on_random = false;
++    s_need_stage_reroll = false;
++    memset(s_p1_random_slots, 0, sizeof(s_p1_random_slots));
++    memset(s_p2_random_slots, 0, sizeof(s_p2_random_slots));
+     io_load_dipswitches("kof95_dips.cfg");
+ }
+ 
+diff --git a/neogeorecomp/src/ng_internal.h b/neogeorecomp/src/ng_internal.h
+index 1818c9b..9f1cd79 100644
+--- a/neogeorecomp/src/ng_internal.h
++++ b/neogeorecomp/src/ng_internal.h
+@@ -71,13 +71,20 @@ uint8_t io_get_difficulty(void);
+ void    io_set_difficulty(uint8_t diff);
+ uint8_t io_get_blood(void);
+ void    io_set_blood(uint8_t blood);
++uint8_t io_get_allow_duplicates(void);
++void    io_set_allow_duplicates(uint8_t val);
++uint8_t io_get_random_select(void);
++void    io_set_random_select(uint8_t val);
++void    io_on_order_select(void);
++void    io_post_render_frame(uint32_t *fb);
++void    io_on_audio_command(uint8_t cmd);
+ void    io_sync_soft_dips(void);
+ int     io_load_dipswitches(const char *path);
+ int     io_save_dipswitches(const char *path);
+ 
+ /* ---- audio: Z80 + YM2610 (audio.c) ---- */
+ int     audio_init(const uint8_t *m1, size_t m1_size, const uint8_t *sm1,
+-                   const uint8_t *const *vroms, const size_t *vrom_sizes, int nvrom);
++                   const uint8_t *vrom, size_t vrom_size);
+ void    audio_reset(void);
+ void    audio_sync(void);                /* run the Z80 up to ng_cycles */
+ void    audio_command(uint8_t cmd);      /* 68k write to $320000 */
+@@ -108,6 +115,7 @@ int  write_png(const char *path, const uint32_t *argb, int w, int h);
+ /* ---- window (window_sdl.c, or stubs in platform.c without SDL2) ---- */
+ int  window_open(const char *title, int scale);
+ bool window_frame(const uint32_t *fb, ng_input_t *in);   /* false = quit */
++void window_audio(const int16_t *samples, size_t frames);
+ void window_close(void);
+ 
+ #endif
+diff --git a/neogeorecomp/src/osd_menu.c b/neogeorecomp/src/osd_menu.c
+index 9e7ebf3..245fdc7 100644
+--- a/neogeorecomp/src/osd_menu.c
++++ b/neogeorecomp/src/osd_menu.c
+@@ -19,7 +19,7 @@ static bool s_menu_open = false;
+ static int  s_cursor = 0;
+ static const char *s_cfg_path = "kof95_dips.cfg";
+ 
+-#define NUM_MENU_ITEMS 12
++#define NUM_MENU_ITEMS 14
+ 
+ static const struct {
+     const char *label;
+@@ -27,6 +27,8 @@ static const struct {
+ } s_items[NUM_MENU_ITEMS] = {
+     {"Game Difficulty",                "Difficulty: Level 1 (Easy) to 8"},
+     {"Blood Color",                    "Arcade Blood: ON (Red) or OFF"},
++    {"Duplicate Characters",           "Allow duplicate fighters in Team Edit"},
++    {"Random Select (?)",              "Enable (?) random character slot on grid"},
+     {"DIP 1: Test / Setting Mode",     "Enter MVS Hardware Test Menu"},
+     {"DIP 2: Coin Chute 2 Option",     "Select 1 coin chute or 2 chutes"},
+     {"DIP 3: Controller Type",         "Joystick vs Mahjong controller"},
+@@ -61,18 +63,24 @@ static void menu_change(int delta) {
+     } else if (s_cursor == 1) {
+         // Blood (ON / OFF)
+         io_set_blood(!io_get_blood());
+-    } else if (s_cursor >= 2 && s_cursor <= 9) {
++    } else if (s_cursor == 2) {
++        // Duplicate Characters (ON / OFF)
++        io_set_allow_duplicates(!io_get_allow_duplicates());
++    } else if (s_cursor == 3) {
++        // Random Select (?) (ON / OFF)
++        io_set_random_select(!io_get_random_select());
++    } else if (s_cursor >= 4 && s_cursor <= 11) {
+         // DIP switches 1 to 8
+-        int bit = s_cursor - 2;
++        int bit = s_cursor - 4;
+         uint8_t dips = io_get_dipswitches();
+         int cur = (dips >> bit) & 1;
+         io_set_dipswitch_bit(bit, !cur);
+-    } else if (s_cursor == 10) {
++    } else if (s_cursor == 12) {
+         // Toggle test switch
+         uint8_t dips = io_get_dipswitches();
+         io_set_dipswitch_bit(0, !(dips & 1)); // Toggle DIP 1
+         osd_menu_toggle();
+-    } else if (s_cursor == 11) {
++    } else if (s_cursor == 13) {
+         osd_menu_toggle();
+     }
+ }
+@@ -237,9 +245,9 @@ void osd_menu_render(uint32_t *fb) {
+     uint8_t dips = io_get_dipswitches();
+ 
+     // Menu Entries
+-    int start_y = box_y + 24;
++    int start_y = box_y + 22;
+     for (int i = 0; i < NUM_MENU_ITEMS; i++) {
+-        int row_y = start_y + i * 11;
++        int row_y = start_y + i * 10;
+         bool is_selected = (i == s_cursor);
+ 
+         uint32_t text_color = is_selected ? 0xFF00FFFF : 0xFFE0E0E0;
+@@ -259,8 +267,22 @@ void osd_menu_render(uint32_t *fb) {
+             const char *badge = blood ? "[RED ON]" : "[OFF   ]";
+             uint32_t badge_color = blood ? 0xFFFF4444 : 0xFF888888;
+             draw_text(fb, box_x + 224, row_y, badge, badge_color);
+-        } else if (i >= 2 && i <= 9) {
+-            int bit = i - 2;
++        } else if (i == 2) {
++            snprintf(line_buf, sizeof(line_buf), "%c %-20s", cursor_sym, s_items[i].label);
++            draw_text(fb, box_x + 8, row_y, line_buf, text_color);
++            bool dup = io_get_allow_duplicates();
++            const char *badge = dup ? "[ALLOWED]" : "[OFF    ]";
++            uint32_t badge_color = dup ? 0xFF00FF66 : 0xFF888888;
++            draw_text(fb, box_x + 216, row_y, badge, badge_color);
++        } else if (i == 3) {
++            snprintf(line_buf, sizeof(line_buf), "%c %-20s", cursor_sym, s_items[i].label);
++            draw_text(fb, box_x + 8, row_y, line_buf, text_color);
++            bool rnd = io_get_random_select();
++            const char *badge = rnd ? "[ACTIVE ]" : "[OFF    ]";
++            uint32_t badge_color = rnd ? 0xFFFFD700 : 0xFF888888;
++            draw_text(fb, box_x + 216, row_y, badge, badge_color);
++        } else if (i >= 4 && i <= 11) {
++            int bit = i - 4;
+             bool on = (dips >> bit) & 1;
+             snprintf(line_buf, sizeof(line_buf), "%c %-27s", cursor_sym, s_items[i].label);
+             draw_text(fb, box_x + 8, row_y, line_buf, text_color);
+@@ -277,12 +299,12 @@ void osd_menu_render(uint32_t *fb) {
+ 
+     // Divider before description
+     for (int x = box_x + 6; x < box_x + box_w - 6; x++) {
+-        fb[(box_y + 162) * NG_SCREEN_W + x] = 0xFF556677;
++        fb[(box_y + 175) * NG_SCREEN_W + x] = 0xFF556677;
+     }
+ 
+     // Description text for selected option
+-    draw_text(fb, box_x + 10, box_y + 168, s_items[s_cursor].desc, 0xFFFFFFAA);
++    draw_text(fb, box_x + 10, box_y + 180, s_items[s_cursor].desc, 0xFFFFFFAA);
+ 
+     // Footer Help text
+-    draw_text(fb, box_x + 14, box_y + 190, "[U/D]Move [L/R]Chg [A]Set [TAB]Exit", 0xFF8899AA);
++    draw_text(fb, box_x + 14, box_y + 196, "[U/D]Move [L/R]Chg [A]Set [TAB]Exit", 0xFF8899AA);
+ }

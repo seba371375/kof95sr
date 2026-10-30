@@ -1,0 +1,4 @@
+upstream: https://github.com/sp00nznet/neogeorecomp
+commit: a75220d7de7ba8319045673187b1c2a01b6713e7
+musashi: 313ebf1bd9f4d0d93341eb5ce21fd8a119e9dbdd
+z80: d64fe10a2274e5e40019b1086bf7d8990cbc5f23

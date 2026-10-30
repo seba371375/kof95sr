@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<livearea style="a1" format-ver="01.00" content-rev="1">
+	<livearea-background>
+		<image>bg.png</image>
+	</livearea-background>
+	<gate>
+		<startup-image>startup.png</startup-image>
+	</gate>
+	<frame id="frame1">
+		<liveitem>
+			<text>
+				<str color="#ffffff" size="22" bold="on">The King of Fighters '95 — Static Recompilation</str>
+			</text>
+		</liveitem>
+	</frame>
+	<frame id="frame2">
+		<liveitem>
+			<text>
+				<str color="#ffd700" size="18">Place MVS ROMs in ux0:data/kof95/roms/  |  SELECT+START: OSD Menu</str>
+			</text>
+		</liveitem>
+	</frame>
+</livearea>
