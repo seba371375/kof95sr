@@ -12,10 +12,18 @@ The King of Fighters '95
 <img width="960" height="544" alt="The King of Fighters '95 on PS Vita - Character Select" src="https://raw.githubusercontent.com/seba371375/kof95sr/main/screenshots/screenshot_03.jpg" />
 
 # Author
-Antigravity, seba371375. (Original arcade game © 1995 SNK Corporation)
+Antigravity, seba371375 (PS Vita port). Based on neogeorecomp architecture. Third-party cores: ymfm by Aaron Giles, Musashi by Karl Stenerud, vitaGL by Rinnegatamante. Original arcade game © 1995 SNK Corporation.
 
 # AI status
-AI assisted: The static recompilation pipeline, low-level ARM Cortex-A9 optimizations, asynchronous dual-core threading architecture, and PS Vita porting were architected and implemented by Antigravity (Google DeepMind) in pair-programming collaboration with seba371375. Every build was profiled, debugged, and verified on real PlayStation Vita hardware.
+AI assisted: The PS Vita porting, low-level ARM Cortex-A9 NEON/assembly optimizations, dual-core threading architecture, and static recompilation workflow were architected and implemented by Antigravity (Google DeepMind) in pair-programming collaboration with seba371375, with every build profiled, debugged, and tested on real PlayStation Vita hardware.
+
+The underlying open-source components and engine cores were NOT written by AI:
+- Base static recompilation runtime derived from neogeorecomp.
+- Yamaha YM2610 FM/ADPCM sound core by Aaron Giles (ymfm).
+- Motorola 68000 CPU engine by Karl Stenerud (Musashi).
+- Z80 CPU emulation core.
+- Hardware graphics rendering libraries (vitaGL by Rinnegatamante and SDL2).
+- The original arcade game code and assets are © 1995 SNK Corporation.
 
 # Description
 The King of Fighters '95 Static Recompilation (`kof95sr`) is a native, source-level port of SNK's legendary arcade fighting classic for the PlayStation Vita (Title ID: `KOF950001`).
