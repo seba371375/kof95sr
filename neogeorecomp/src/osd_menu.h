@@ -19,6 +19,9 @@ void osd_menu_update_gamepad(SDL_GameController *pad);
 /* Renders the OSD menu over the 320x224 ARGB framebuffer */
 void osd_menu_render(uint32_t *fb);
 
+/* Renders a full-screen diagnostic message when BIOS or Game ROM files are missing */
+void osd_render_missing_roms_screen(uint32_t *fb, const char *rom_path, bool missing_bios, bool missing_game);
+
 /* Controller layout preset (0=SNK Arcade, 1=Fighting Standard, 2=KOF Classic Line) */
 int  window_get_pad_layout(void);
 void window_set_pad_layout(int layout);

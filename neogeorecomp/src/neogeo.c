@@ -16,6 +16,7 @@
 #include <stdlib.h>
 #include <string.h>
 #ifdef NG_HAVE_SDL
+#include "osd_menu.h"
 #include <SDL.h>
 #include <SDL_thread.h>
 #ifdef __vita__
@@ -262,7 +263,7 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
     if (parse_args(argc, argv, &o)) return 2;
     if (o.input && load_script(o.input)) return 1;
 
-    size_t sz, bios_sz, sfix_sz, sm1_sz, lo_sz, srom_sz, m1_sz;
+    size_t sz = 0, bios_sz = 0, sfix_sz = 0, sm1_sz = 0, lo_sz = 0, srom_sz = 0, m1_sz = 0;
     uint8_t *prom = ng_load_prom(o.rom_path, game);
     uint8_t *bios = ng_read_file(o.bios_path, o.bios_name, &bios_sz);
     uint8_t *sfix = ng_read_file(o.bios_path, "sfix.sfix", &sfix_sz);
@@ -271,11 +272,57 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
     uint8_t *crom = ng_load_crom(o.rom_path, game);
     uint8_t *srom = ng_read_file(o.rom_path, game->srom, &srom_sz);
     uint8_t *m1 = ng_read_file(o.rom_path, game->m1, &m1_sz);
-    if (!prom || !bios || !sfix || !sm1 || !lo || !crom || !srom || !m1) {
+
+    uint32_t vrom_total = game->vrom_size ? game->vrom_size : 0x1000000;
+    uint8_t *vrom_buf = (uint8_t *)calloc(1, vrom_total);
+    int vrom_ok = (vrom_buf != NULL);
+    uint32_t curr_off = 0;
+    for (int nv = 0; vrom_ok && nv < NG_MAX_PARTS && game->vrom[nv]; nv++) {
+        size_t vsz = 0;
+        uint8_t *v = ng_read_file(o.rom_path, game->vrom[nv], &vsz);
+        if (!v) {
+            vrom_ok = 0;
+            break;
+        }
+        uint32_t dest = game->vrom_offsets[nv] ? game->vrom_offsets[nv] : curr_off;
+        if (dest + vsz <= vrom_total) {
+            memcpy(vrom_buf + dest, v, vsz);
+        }
+        curr_off = dest + (uint32_t)vsz;
+        free(v);
+    }
+
+    int missing_bios = (!bios || bios_sz < 0x20000 || !sfix || !sm1 || !lo);
+    int missing_game = (!prom || !crom || !srom || !m1 || !vrom_ok);
+
+    if (missing_bios || missing_game) {
         fprintf(stderr, "error: missing ROM files; see docs/running.md for the expected set\n");
+        free(prom); free(bios); free(sfix); free(sm1);
+        free(lo); free(crom); free(srom); free(m1); free(vrom_buf);
+#ifdef NG_HAVE_SDL
+        osd_render_missing_roms_screen(s_fb, o.rom_path, missing_bios != 0, missing_game != 0);
+        for (int i = 0; i < o.nshots; i++) {
+            if (o.shots[i].frame == 0) {
+                write_png(o.shots[i].path, s_fb, NG_SCREEN_W, NG_SCREEN_H);
+            }
+        }
+        if (!o.headless && platform_init(game->title, o.scale, o.headless, NULL) == 0) {
+            for (;;) {
+                SDL_Event ev;
+                int quit = 0;
+                while (SDL_PollEvent(&ev)) {
+                    if (ev.type == SDL_QUIT) quit = 1;
+                    if (ev.type == SDL_KEYDOWN && ev.key.keysym.sym == SDLK_ESCAPE) quit = 1;
+                }
+                if (quit) break;
+                platform_present(s_fb);
+                SDL_Delay(16);
+            }
+            platform_shutdown();
+        }
+#endif
         return 1;
     }
-    if (bios_sz < 0x20000) { fprintf(stderr, "error: %s is not a 128 KB system ROM\n", o.bios_name); return 1; }
     ng_swap16(bios, 0x20000);
     (void)sz;
 
@@ -287,27 +334,6 @@ int ng_main(int argc, char **argv, const ng_game_t *game,
     free(srom);
     free(sfix);
     free(lo);
-
-    uint32_t vrom_total = game->vrom_size;
-    if (vrom_total == 0) {
-        // default fallback to 16MB Neo Geo limit
-        vrom_total = 0x1000000;
-    }
-    uint8_t *vrom_buf = (uint8_t *)calloc(1, vrom_total);
-    if (!vrom_buf) return 1;
-
-    uint32_t curr_off = 0;
-    for (int nv = 0; nv < NG_MAX_PARTS && game->vrom[nv]; nv++) {
-        size_t vsz = 0;
-        uint8_t *v = ng_read_file(o.rom_path, game->vrom[nv], &vsz);
-        if (!v) { free(vrom_buf); return 1; }
-        uint32_t dest = game->vrom_offsets[nv] ? game->vrom_offsets[nv] : curr_off;
-        if (dest + vsz <= vrom_total) {
-            memcpy(vrom_buf + dest, v, vsz);
-        }
-        curr_off = dest + (uint32_t)vsz;
-        free(v);
-    }
 
     audio_init(m1, m1_sz, sm1, vrom_buf, vrom_total);
     exec_init(funcs, nfuncs, o.interp || nfuncs == 0);

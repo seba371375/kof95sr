@@ -1,9 +1,14 @@
 # KOF '95 Static Recompilation (`kof95sr`)
 
+[![VitaDB](https://img.shields.io/badge/VitaDB-ID%201719-blue?logo=playstationvita&logoColor=white)](https://www.rinnegatamante.eu/vitadb/#/info/1719)
+[![Release](https://img.shields.io/github/v/release/seba371375/kof95sr?color=brightgreen)](https://github.com/seba371375/kof95sr/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Native static recompilation and source port of **The King of Fighters '95** (SNK Neo Geo MVS / AES) for modern platforms (**macOS, Linux, Windows, PlayStation 5, PlayStation Vita**).
 
 > **Architected and coded by [Antigravity](https://github.com/google-deepmind)**  
-> *Pair-programmed with [seba371375](https://github.com/seba371375)*
+> *Pair-programmed with [seba371375](https://github.com/seba371375)*  
+> 📦 **PS Vita Release on VitaDB:** [**The King of Fighters '95 (VitaDB #1719)**](https://www.rinnegatamante.eu/vitadb/#/info/1719)
 
 Instead of traditional full-system emulation, `kof95sr` translates the original Motorola 68000 arcade assembly ahead-of-time (AOT) into native C routines, executing them directly on the host CPU with zero interpreter overhead.
 
@@ -187,6 +192,9 @@ Transfer the files to your PS5 internal storage:
 ## 🕹️ Building & Running on PlayStation Vita (VitaDB / `.vpk`)
 
 `kof95sr` builds as a native PS Vita homebrew package (`kof95.vpk`, Title ID `KOF950001`) running at 444 MHz ARM Cortex-A9 with GXM hardware scaling (`960x544`) and extended memory (`ATTRIBUTE2=12` / 192 MB user heap).
+
+- **Download directly on PS Vita:** Available via **VitaDB Downloader** or on the web at [**VitaDB #1719**](https://www.rinnegatamante.eu/vitadb/#/info/1719).
+- **On-Screen ROM Diagnostic:** If launched before copying the ROM or BIOS files, the game automatically creates `ux0:data/kof95/roms/` and displays an on-screen diagnostic screen indicating which files (`neogeo.zip` or `kof95.zip`) are missing and the exact directory path where they are expected.
 
 ### Cross-Compiling `kof95.vpk` with VitaSDK
 1. Install [VitaSDK](https://vitasdk.org/) (or use the official `vitasdk/vitasdk:latest` Docker image).

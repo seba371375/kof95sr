@@ -498,3 +498,69 @@ void osd_menu_render(uint32_t *fb) {
         draw_text(fb, box_x + 14, box_y + 199, "[ENTER]Rebind  [ESC]Back to Main Menu", 0xFF8899AA);
     }
 }
+
+void osd_render_missing_roms_screen(uint32_t *fb, const char *rom_path, bool missing_bios, bool missing_game) {
+    if (!fb) return;
+
+    // Fill background with deep dark navy
+    for (int i = 0; i < NG_SCREEN_W * NG_SCREEN_H; i++) {
+        fb[i] = 0xFF060A12;
+    }
+
+    int box_x = 4;
+    int box_y = 4;
+    int box_w = 312;
+    int box_h = 216;
+
+    draw_box(fb, box_x, box_y, box_w, box_h, 0xFF101828, 0xFFFF4444);
+
+    // Header
+    draw_text(fb, 20, 12, "! ERROR: MISSING ROM / BIOS FILES !", 0xFFFF4444);
+
+    // Divider line
+    for (int x = box_x + 6; x < box_x + box_w - 6; x++) {
+        fb[24 * NG_SCREEN_W + x] = 0xFF553333;
+    }
+
+    // Status Check
+    draw_text(fb, 12, 32, "Neo Geo BIOS (neogeo.zip):", 0xFFE0E0E0);
+    draw_text(fb, 228, 32, missing_bios ? "[MISSING]" : "[  OK   ]",
+              missing_bios ? 0xFFFF4444 : 0xFF00FF66);
+    draw_text(fb, 12, 43, "  (sp-s2.sp1, sfix, sm1, 000-lo.lo)", 0xFF99AABB);
+
+    draw_text(fb, 12, 58, "KOF '95 ROMs (kof95.zip):", 0xFFE0E0E0);
+    draw_text(fb, 228, 58, missing_game ? "[MISSING]" : "[  OK   ]",
+              missing_game ? 0xFFFF4444 : 0xFF00FF66);
+    draw_text(fb, 12, 69, "  (084-p1, c1..c8, s1, m1, v1..v3)", 0xFF99AABB);
+
+    // Divider line
+    for (int x = box_x + 6; x < box_x + box_w - 6; x++) {
+        fb[83 * NG_SCREEN_W + x] = 0xFF445566;
+    }
+
+    // Expected Directory Path
+    draw_text(fb, 12, 91, "EXPECTED ROM DIRECTORY PATH:", 0xFFFFD700);
+    draw_box(fb, 12, 103, 296, 36, 0xFF080C14, 0xFF00FFFF);
+
+#if defined(__vita__)
+    (void)rom_path;
+    draw_text(fb, 20, 109, "ux0:data/kof95/roms/", 0xFF00FFFF);
+    draw_text(fb, 20, 122, "or uma0:data/kof95/roms/", 0xFF88CCEE);
+#elif defined(__PROSPERO__) || defined(__PS5__)
+    (void)rom_path;
+    draw_text(fb, 20, 109, "/data/kof95/roms/", 0xFF00FFFF);
+    draw_text(fb, 20, 122, "or /user/homebrew/kof95/roms/", 0xFF88CCEE);
+#else
+    char path_line[36];
+    snprintf(path_line, sizeof(path_line), "%s/", (rom_path && rom_path[0]) ? rom_path : "roms");
+    draw_text(fb, 20, 109, path_line, 0xFF00FFFF);
+    draw_text(fb, 20, 122, "(or pass --rom-path <DIR>)", 0xFF88CCEE);
+#endif
+
+    // Instructions
+    draw_text(fb, 12, 148, "HOW TO FIX:", 0xFFFFD700);
+    draw_text(fb, 12, 160, "1. Extract all files from MAME", 0xFFE0E0E0);
+    draw_text(fb, 12, 171, "   kof95.zip & neogeo.zip (unpacked)", 0xFFE0E0E0);
+    draw_text(fb, 12, 182, "2. Copy them to the path above.", 0xFFE0E0E0);
+    draw_text(fb, 12, 193, "3. Restart the application.", 0xFFE0E0E0);
+}
