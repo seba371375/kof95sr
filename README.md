@@ -16,26 +16,27 @@ Instead of traditional full-system emulation, `kof95sr` translates the original 
 
 ## ✨ Features
 
-- **⚡ Native Performance:** Static recompilation of 28,000+ entry points into native C functions compiled with `-O3` optimization (Clang / GCC / MSVC). Runs at locked 60 FPS on PC and natively on the PS5's AMD Zen 2 CPU.
-- **🔊 Bit-Perfect Sound:** Authentic **Yamaha YM2610** (OPNB) FM / SSG / ADPCM audio synthesis powered by `ymfm` running at native 55.5 kHz / 48 kHz stereo, synchronized with the Z80 sound CPU and authentic attract demo sound.
+- **⚡ Native Performance:** Static recompilation of 28,000+ entry points into native C functions compiled with `-O3` optimization (Clang / GCC / MSVC). Runs at locked 60 FPS on PC, natively on the PS5's AMD Zen 2 CPU, and at 444 MHz on the PS Vita's ARM Cortex-A9 with branchless 64-bit sprite rasterization.
+- **🔊 Bit-Perfect Dual-Core Sound:** Authentic **Yamaha YM2610** (OPNB) FM / SSG / ADPCM audio synthesis powered by `ymfm` running at native 55.5 kHz / 48 kHz stereo, synchronized with the Z80 sound CPU and authentic attract demo sound. Uses an asynchronous dual-core worker thread (offloaded to CPU Core 1 on PS Vita) so audio synthesis never blocks frame rendering.
 - **🖥️ Display & Video Filters:**
-  - Neo Geo LSPC scanline-by-scanline raster renderer with pixel-accurate sprite zoom, palette banking, 4:3 arcade aspect ratio, integer scaling, and letterboxing via SDL2 Accelerated or OpenGL.
+  - Neo Geo LSPC scanline-by-scanline raster renderer with pixel-accurate sprite zoom, palette banking, 4:3 arcade aspect ratio, integer scaling, and letterboxing via SDL2 Accelerated, OpenGL, or PS Vita GXM (`vitaGL`).
   - Real-time video post-processing filters: **Raw Pixel (Nearest)**, **Bilinear (Smooth)**, **CRT Scanlines (50% & 75%)**, **CRT Trinitron (Aperture Grille RGB)**, **Scale2x (Pixel HD)**, and **CRT Warm (Curved)**.
-  - Native 1920x1080 fullscreen mode on PlayStation 5 with hardware VSync lock.
+  - Native 1920x1080 fullscreen mode on PlayStation 5 and 960x544 hardware GXM scaling on PlayStation Vita with VSync lock.
 - **🎮 Controller & Input Support:**
-  - Full hotplug support for DualSense (PS5), DualShock 4 (PS4), Xbox, Switch Pro, fightsticks, and keyboard.
+  - Full hotplug support for DualSense (PS5), DualShock 4 (PS4), PS Vita built-in controls, Xbox, Switch Pro, fightsticks, and keyboard.
   - Independent controller mapping ensuring Player 1 and Player 2 are never duplicated on multi-interface devices.
   - **3 Gamepad Layout Presets** selectable anytime in-game:
     - `0: SNK Default` (Cross=A, Circle=B, Square=C, Triangle=D)
     - `1: Fighting Modern` (Square=A, Triangle=C, Cross=B, Circle=D)
     - `2: KOF Classic Line` (Square=A, Cross=B, Triangle=C, R1=D)
-  - Dedicated macro shortcuts: <kbd>L1</kbd> (Emergency Roll / Dodge), <kbd>R1</kbd> (Blow-Away Attack), <kbd>L2</kbd> (Power Charge), <kbd>R2</kbd> (Taunt).
-- **⏸️ Interactive In-Game OSD Menu with Pause:**
-  - Press <kbd>L3</kbd> + <kbd>R3</kbd> (or <kbd>L1</kbd> + <kbd>R1</kbd> + <kbd>Options</kbd>) on gamepad, or <kbd>Tab</kbd> / <kbd>F1</kbd> on keyboard.
+  - Dedicated macro shortcuts: <kbd>L1</kbd>/<kbd>L</kbd> (Emergency Roll / Dodge), <kbd>R1</kbd>/<kbd>R</kbd> (Blow-Away Attack), <kbd>L2</kbd> / Right Stick (Power Charge), <kbd>R2</kbd> / Right Stick (Taunt).
+- **⏸️ Interactive In-Game OSD Menu & Diagnostics:**
+  - Press <kbd>L3</kbd> + <kbd>R3</kbd> (or <kbd>L1</kbd> + <kbd>R1</kbd> + <kbd>Options</kbd>) on gamepad, <kbd>SELECT</kbd> + <kbd>START</kbd> on PS Vita, or <kbd>Tab</kbd> / <kbd>F1</kbd> on keyboard.
   - **Automatic Emulation & Audio Pause:** Opening the menu cleanly freezes the game simulation, timer, and audio output. Resuming restores gameplay seamlessly.
   - **DIP Switch Settings:** Adjust game difficulty (Level 1 to 8), arcade blood color (Red/Off), Free Play, and Coin Chutes.
   - **Keyboard Rebinding Submenu:** Remap Player 1 and Player 2 keyboard actions directly from the GUI.
-  - **Full Persistence:** Configurations automatically save to `kof95_dips.cfg` and `kof95_controls.cfg` (in the local folder on PC, or `/data/kof95/` on PS5).
+  - **On-Screen Missing ROM/BIOS Diagnostic:** Automatically initializes expected ROM directories on first boot and displays a clear visual diagnostic screen if any BIOS (`neogeo.zip`) or game (`kof95.zip`) ROM files are missing.
+  - **Full Persistence:** Configurations automatically save to `kof95_dips.cfg` and `kof95_controls.cfg` (in the local folder on PC, `/data/kof95/` on PS5, or `ux0:data/kof95/` on PS Vita).
 - **⭐ Gameplay Enhancements:**
   - **Duplicate Characters:** Optional Team Edit setting allowing duplicate fighters on the same team (e.g., triple Kyo, triple Iori).
   - **Random Select `[?]` Slot:** Interactive random slot added to the character selection grid, confirmable with any attack button with authentic stage re-roll.
@@ -251,23 +252,24 @@ Transfer the files to your PS5 internal storage:
 
 ---
 
-## 📚 References & Technical Documentation
+## 📚 Dependencies, References & Technical Documentation
 
-This project builds upon foundational hardware reverse engineering and open-source emulation tools:
+This project builds upon foundational hardware reverse engineering, static recompilation toolkits, and open-source emulation cores:
 
+* **Static Recompilation Toolkit & Methodology:**
+  * [neogeorecomp](https://github.com/sp00nznet/neogeorecomp) by [sp00nznet](https://github.com/sp00nznet) — Base 68000-to-C static recompilation toolkit (`m68krecomp`) and Neo Geo MVS board runtime architecture.
+  * Inspired by modern ahead-of-time (AOT) static recompilation techniques seen in projects such as [N64Recomp](https://github.com/Mr-Wiseguy/N64Recomp) and [Zelda 64 Recomp](https://github.com/ZeldaRE/Zelda64Recomp).
+* **Emulation Cores & Audio Bridges:**
+  * [Musashi 680x0 CPU Engine](https://github.com/kstenerud/Musashi) by Karl Stenerud — Used for opcode disassembly, conformance verification (`--verify`), and fallback decoding.
+  * [ymfm Yamaha FM/ADPCM Core](https://github.com/aaronsgiles/ymfm) by Aaron Giles — Bit-perfect Yamaha YM2610 (OPNB) FM, SSG, ADPCM-A, and ADPCM-B sound synthesis.
+  * [Z80 CPU Core](https://github.com/redcode/Z80) by Manuel Sainz de Baranda y Goñi — Cycle-accurate Zilog Z80 sound CPU emulation.
+* **Target Platforms, Graphics & SDKs:**
+  * [Simple DirectMedia Layer (SDL2)](https://www.libsdl.org/) — Cross-platform windowing, controller hotplug/input polling, and audio device management.
+  * [VitaSDK](https://vitasdk.org/) & [vitaGL](https://github.com/Rinnegatamante/vitaGL) by Rinnegatamante — PlayStation Vita ARM GCC cross-compiler toolchain and hardware-accelerated GXM graphics library.
+  * [ps5-payload-sdk](https://github.com/ps5-payload-dev/ps5-payload-sdk) by John Törnblom — PlayStation 5 native bare-metal homebrew toolchain.
 * **Hardware Documentation & Architecture:**
   * [NeoGeo Development Wiki](https://wiki.neogeodev.org/) — Hardware register specifications, LSPC video timings, memory mapping, and graphics formats.
   * [Neo Geo MVS/AES Technical Information](https://wiki.neogeodev.org/index.php?title=Memory_map) — Cartridge bankswitching and Z80 sound port interfaces.
-* **Emulation Cores & Audio Bridges:**
-  * [Musashi 680x0 CPU Engine](https://github.com/kstenerud/Musashi) by Karl Stenerud — Used for opcode disassembly, verification, and fallback decoding.
-  * [ymfm Yamaha FM/ADPCM Core](https://github.com/aaronsgiles/ymfm) by Aaron Giles — Bit-perfect Yamaha YM2610 (OPNB) sound synthesis.
-  * [Z80 CPU Core](https://github.com/redcode/Z80) — Cycle-accurate Zilog Z80 sound CPU emulation.
-* **Target Platforms & SDKs:**
-  * [Simple DirectMedia Layer (SDL2)](https://www.libsdl.org/) — Cross-platform windowing, input polling, and audio device management.
-  * [VitaSDK](https://vitasdk.org/) & [vitaGL](https://github.com/Rinnegatamante/vitaGL) — PlayStation Vita GCC cross-compiler toolchain and GXM graphics library by Rinnegatamante.
-  * [ps5-payload-sdk](https://github.com/ps5-payload-dev/ps5-payload-sdk) — PlayStation 5 native bare-metal homebrew toolchain.
-* **Static Recompilation Methodology:**
-  * Inspired by modern ahead-of-time (AOT) static recompilation techniques seen in projects such as [N64Recomp](https://github.com/Mr-Wiseguy/N64Recomp) and [Zelda 64 Recomp](https://github.com/ZeldaRE/Zelda64Recomp).
 
 ---
 
@@ -275,9 +277,12 @@ This project builds upon foundational hardware reverse engineering and open-sour
 
 This project is licensed under the **[MIT License](LICENSE)** — see the [LICENSE](LICENSE) file for full details.
 
-* **Codebase Author:** Developed and coded by **[Antigravity](https://github.com/google-deepmind)** (Google DeepMind).
+* **Codebase Author:** Architected and coded by **[Antigravity](https://github.com/google-deepmind)** (Google DeepMind) in pair-programming collaboration with **[seba371375](https://github.com/seba371375)**.
 * **Game Copyright:** **The King of Fighters '95** is © 1995 **SNK Corporation**. All rights reserved. This repository contains **NO** copyrighted ROMs, code, artwork, or sound files. Users must provide their own legally acquired game ROMs.
 * **Third-Party Licenses:**
+  * `neogeorecomp` base runtime & `m68krecomp`: © sp00nznet ([MIT](https://opensource.org/licenses/MIT)).
   * `ymfm` sound core: © Aaron Giles ([BSD 3-Clause](https://opensource.org/licenses/BSD-3-Clause)).
   * `Musashi` 68000 core: © Karl Stenerud ([MIT](https://opensource.org/licenses/MIT)).
+  * `Z80` CPU core: © Manuel Sainz de Baranda y Goñi ([LGPLv3 / Zlib](https://github.com/redcode/Z80)).
+  * `vitaGL`: © Rinnegatamante ([MIT](https://github.com/Rinnegatamante/vitaGL/blob/master/LICENSE)).
   * `SDL2`: © Sam Lantinga ([zlib License](https://www.zlib.net/zlib_license.html)).
